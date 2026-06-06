@@ -40,6 +40,8 @@ yarn-error.*
 *.tsbuildinfo
 .tmp-smoke/
 .tmp-pages/
+.tmp-crop/
+__pycache__/
 
 # generated native folders
 /ios

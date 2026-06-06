@@ -1605,25 +1605,46 @@ function CropModal({
       onShouldBlockNativeResponder: () => true,
     });
 
-  const makeWebMouseHandlers = (mode: CropGestureMode) => {
+  const makeWebPointerHandlers = (mode: CropGestureMode) => {
     if (Platform.OS !== 'web') return {};
     return {
-      onMouseDown: (event: any) => {
+      onPointerDown: (event: any) => {
         if (busy) return;
         event.preventDefault?.();
         event.stopPropagation?.();
+        const pointerId = event.pointerId;
+        const currentTarget = event.currentTarget;
+        if (typeof currentTarget?.setPointerCapture === 'function' && pointerId !== undefined) {
+          try {
+            currentTarget.setPointerCapture(pointerId);
+          } catch {
+            // Some mobile browsers reject pointer capture after synthetic events.
+          }
+        }
         const start = cropRef.current;
         const startX = event.clientX ?? event.pageX ?? 0;
         const startY = event.clientY ?? event.pageY ?? 0;
-        const move = (moveEvent: MouseEvent) => {
+        const move = (moveEvent: PointerEvent) => {
+          if (pointerId !== undefined && moveEvent.pointerId !== pointerId) return;
+          moveEvent.preventDefault?.();
           updateCropFromGesture(mode, start, moveEvent.clientX - startX, moveEvent.clientY - startY);
         };
-        const stop = () => {
-          window.removeEventListener('mousemove', move);
-          window.removeEventListener('mouseup', stop);
+        const stop = (stopEvent: PointerEvent) => {
+          if (pointerId !== undefined && stopEvent.pointerId !== pointerId) return;
+          if (typeof currentTarget?.releasePointerCapture === 'function' && pointerId !== undefined) {
+            try {
+              currentTarget.releasePointerCapture(pointerId);
+            } catch {
+              // Pointer capture may already be released by the browser.
+            }
+          }
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', stop);
+          window.removeEventListener('pointercancel', stop);
         };
-        window.addEventListener('mousemove', move);
-        window.addEventListener('mouseup', stop);
+        window.addEventListener('pointermove', move, { passive: false });
+        window.addEventListener('pointerup', stop);
+        window.addEventListener('pointercancel', stop);
       },
     };
   };
@@ -1638,11 +1659,11 @@ function CropModal({
   const topRightNativeHandlers = Platform.OS === 'web' ? {} : topRightResponder.panHandlers;
   const bottomLeftNativeHandlers = Platform.OS === 'web' ? {} : bottomLeftResponder.panHandlers;
   const bottomRightNativeHandlers = Platform.OS === 'web' ? {} : bottomRightResponder.panHandlers;
-  const moveWebHandlers = useMemo(() => makeWebMouseHandlers('move'), [busy, displaySize.height, displaySize.width]);
-  const topLeftWebHandlers = useMemo(() => makeWebMouseHandlers('top-left'), [busy, displaySize.height, displaySize.width]);
-  const topRightWebHandlers = useMemo(() => makeWebMouseHandlers('top-right'), [busy, displaySize.height, displaySize.width]);
-  const bottomLeftWebHandlers = useMemo(() => makeWebMouseHandlers('bottom-left'), [busy, displaySize.height, displaySize.width]);
-  const bottomRightWebHandlers = useMemo(() => makeWebMouseHandlers('bottom-right'), [busy, displaySize.height, displaySize.width]);
+  const moveWebHandlers = useMemo(() => makeWebPointerHandlers('move'), [busy, displaySize.height, displaySize.width]);
+  const topLeftWebHandlers = useMemo(() => makeWebPointerHandlers('top-left'), [busy, displaySize.height, displaySize.width]);
+  const topRightWebHandlers = useMemo(() => makeWebPointerHandlers('top-right'), [busy, displaySize.height, displaySize.width]);
+  const bottomLeftWebHandlers = useMemo(() => makeWebPointerHandlers('bottom-left'), [busy, displaySize.height, displaySize.width]);
+  const bottomRightWebHandlers = useMemo(() => makeWebPointerHandlers('bottom-right'), [busy, displaySize.height, displaySize.width]);
 
   const adjustCrop = (producer: (rect: DisplayCropRect) => DisplayCropRect) => {
     if (busy) return;
@@ -1793,6 +1814,9 @@ const colors = {
 };
 
 const webCropMovePadStyle = {
+  position: 'absolute',
+  inset: 0,
+  zIndex: 3,
   minWidth: 78,
   minHeight: 48,
   display: 'flex',
