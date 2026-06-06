@@ -217,7 +217,6 @@ function InventoryScreen({
   const [editingPackSize, setEditingPackSize] = useState(false);
   const [selectedPurchaseListId, setSelectedPurchaseListId] = useState(data.purchaseLists[0]?.id);
   const [purchasePickerOpen, setPurchasePickerOpen] = useState(false);
-  const [note, setNote] = useState('');
 
   const selectedColor = getColor(selectedCode) ?? MARD_291_COLORS[0];
   const selectedStock = getStock(data, selectedColor.code);
@@ -323,20 +322,20 @@ function InventoryScreen({
       const delta = quantity * packSize;
       const signedDelta = kind === 'pack-add' ? delta : -delta;
       updateData(
-        (current) => applyStockChange(current, selectedColor.code, signedDelta, signedDelta > 0 ? 'purchase' : 'use', note || `${quantity} 份${signedDelta > 0 ? '入库' : '减少'}`),
+        (current) => applyStockChange(current, selectedColor.code, signedDelta, signedDelta > 0 ? 'purchase' : 'use', `${quantity} 份${signedDelta > 0 ? '入库' : '减少'}`),
         `${selectedColor.code} ${signedDelta > 0 ? '按份增加' : '按份减少'} ${delta} 颗`,
       );
       setNotice(`${selectedColor.code} 已按 ${quantity} 份 × ${packSize} 颗${signedDelta > 0 ? '增加' : '减少'} ${delta} 颗`);
       return;
     }
     if (kind === 'adjust') {
-      updateData((current) => adjustStock(current, selectedColor.code, quantity, note || '手动盘点'), `${selectedColor.code} 盘点为 ${quantity} 颗`);
+      updateData((current) => adjustStock(current, selectedColor.code, quantity, '手动盘点'), `${selectedColor.code} 盘点为 ${quantity} 颗`);
       setNotice(`${selectedColor.code} 已盘点为 ${quantity} 颗`);
       return;
     }
     const delta = kind === 'amount-add' ? quantity : -quantity;
     updateData(
-      (current) => applyStockChange(current, selectedColor.code, delta, delta > 0 ? 'purchase' : 'use', note || (delta > 0 ? '按颗增加' : '按颗减少')),
+      (current) => applyStockChange(current, selectedColor.code, delta, delta > 0 ? 'purchase' : 'use', delta > 0 ? '按颗增加' : '按颗减少'),
       `${selectedColor.code} ${delta > 0 ? '增加' : '减少'} ${quantity} 颗`,
     );
     setNotice(`${selectedColor.code} ${delta > 0 ? '增加' : '减少'} ${quantity} 颗`);
@@ -415,7 +414,6 @@ function InventoryScreen({
             <ActionButton label="取消" onPress={() => setEditingPackSize(false)} tone="neutral" />
           </View>
         ) : null}
-        <LabeledInput label="备注" value={note} onChangeText={setNote} placeholder="可选，例如淘宝补货、试拼消耗" />
 
         {data.purchaseLists.length ? (
           <View style={styles.purchasePickerBlock}>
@@ -626,7 +624,8 @@ function ProjectsScreen({
     try {
       const originalImageUri = await persistProjectImage(selectedProject.id, pendingCropImageUri, 'original');
       const cropped = await cropPatternImage(pendingCropImageUri, crop);
-      const croppedImageUri = await persistProjectImage(selectedProject.id, cropped.uri, 'crop');
+      const ocrReady = await prepareCroppedImageForOcr(cropped.uri);
+      const croppedImageUri = await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop');
       setPendingCropImageUri(undefined);
       setNotice('已裁剪图纸，正在调用 OCR 识别...');
       const ocrResult = await recognizePatternDraft(croppedImageUri, { settings: data.settings });
@@ -662,13 +661,15 @@ function ProjectsScreen({
       return;
     }
     setNotice('正在调用 OCR 识别裁剪图...');
-    const ocrResult = await recognizePatternDraft(imageUri, { settings: data.settings });
+    const ocrReady = await prepareCroppedImageForOcr(imageUri);
+    const finalImageUri = ocrReady.changed ? await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop') : imageUri;
+    const ocrResult = await recognizePatternDraft(finalImageUri, { settings: data.settings });
     const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
     saveProject(
       {
         ...selectedProject,
-        imageUri,
-        croppedImageUri: imageUri,
+        imageUri: finalImageUri,
+        croppedImageUri: finalImageUri,
         ocrStatus: ocrResult.status,
         ocrMessage: ocrResult.message,
         ocrRawText: ocrResult.rawText,
@@ -679,6 +680,19 @@ function ProjectsScreen({
       `${selectedProject.name} OCR 识别`,
     );
     setNotice(ocrResult.message);
+  };
+
+  const openRecognitionImage = () => {
+    const uri = selectedProject?.croppedImageUri ?? selectedProject?.imageUri;
+    if (!uri) {
+      setNotice('还没有可查看的识别图');
+      return;
+    }
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.open(uri, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setNotice('当前平台暂不支持直接打开识别图');
   };
 
   const openDeductPreview = () => {
@@ -744,10 +758,12 @@ function ProjectsScreen({
           </View>
 
           {selectedProject.imageUri ? <Image source={{ uri: selectedProject.imageUri }} style={styles.patternImage} /> : null}
+          {selectedProject.imageUri ? <Text style={styles.muted}>上方预览为 OCR 实际识别图；裁剪后会自动加白底留边，避免超宽图片被接口压缩。</Text> : null}
           <Text style={styles.muted}>{selectedProject.ocrMessage ?? '上传图片后会先裁剪，再把识别结果写入用量草稿。'}</Text>
           <View style={styles.buttonRow}>
             <ActionButton label="上传并裁剪图纸" onPress={pickAndCropPatternImage} tone="neutral" />
             {selectedProject.originalImageUri ? <ActionButton label="重新裁剪原图" onPress={reopenCropFromOriginal} tone="neutral" /> : null}
+            {selectedProject.imageUri ? <ActionButton label="查看识别图" onPress={openRecognitionImage} tone="neutral" /> : null}
             <ActionButton label="识别裁剪图" onPress={recognizeCroppedPattern} tone="amber" />
             <ActionButton label="一键扣库存" onPress={openDeductPreview} tone="danger" />
           </View>
@@ -1359,6 +1375,9 @@ async function persistProjectImage(projectId: string, uri: string, kind = 'image
 }
 
 async function normalizePatternImageForCrop(uri: string) {
+  if (isWebCanvasAvailable()) {
+    return { uri };
+  }
   return ImageManipulator.manipulateAsync(
     uri,
     [],
@@ -1367,17 +1386,118 @@ async function normalizePatternImageForCrop(uri: string) {
 }
 
 async function cropPatternImage(uri: string, crop: CropPixels) {
-  const safeCrop = {
+  const safeCrop: CropPixels = {
     originX: Math.max(0, Math.floor(crop.originX)),
     originY: Math.max(0, Math.floor(crop.originY)),
     width: Math.max(1, Math.floor(crop.width)),
     height: Math.max(1, Math.floor(crop.height)),
   };
+  if (isWebCanvasAvailable()) {
+    return cropPatternImageOnWeb(uri, safeCrop);
+  }
   return ImageManipulator.manipulateAsync(
     uri,
     [{ crop: safeCrop }],
     { compress: 1, format: ImageManipulator.SaveFormat.PNG },
   );
+}
+
+async function prepareCroppedImageForOcr(uri: string) {
+  if (!isWebCanvasAvailable()) return { uri, changed: false };
+  const image = await loadWebImage(uri);
+  const sourceWidth = getLoadedImageWidth(image);
+  const sourceHeight = getLoadedImageHeight(image);
+  if (!sourceWidth || !sourceHeight) return { uri, changed: false };
+
+  const maxCanvasSide = 2600;
+  const padding = 32;
+  const maxOutputAspect = 3.5;
+  const maxContentSide = maxCanvasSide - padding * 2;
+  const minReadableShortSide = 420;
+  const sourceLongSide = Math.max(sourceWidth, sourceHeight);
+  const sourceShortSide = Math.min(sourceWidth, sourceHeight);
+  let scale = Math.max(1, minReadableShortSide / sourceShortSide);
+  scale = Math.min(scale, maxContentSide / sourceLongSide);
+
+  const outputWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const outputHeight = Math.max(1, Math.round(sourceHeight * scale));
+  let canvasWidth = outputWidth + padding * 2;
+  let canvasHeight = outputHeight + padding * 2;
+  if (canvasWidth / canvasHeight > maxOutputAspect) canvasHeight = Math.ceil(canvasWidth / maxOutputAspect);
+  if (canvasHeight / canvasWidth > maxOutputAspect) canvasWidth = Math.ceil(canvasHeight / maxOutputAspect);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  const context = get2dContext(canvas);
+  context.fillStyle = '#FFFFFF';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    image,
+    0,
+    0,
+    sourceWidth,
+    sourceHeight,
+    Math.round((canvasWidth - outputWidth) / 2),
+    Math.round((canvasHeight - outputHeight) / 2),
+    outputWidth,
+    outputHeight,
+  );
+
+  return {
+    uri: canvas.toDataURL('image/png'),
+    changed: true,
+  };
+}
+
+async function cropPatternImageOnWeb(uri: string, crop: CropPixels) {
+  const image = await loadWebImage(uri);
+  const sourceWidth = getLoadedImageWidth(image);
+  const sourceHeight = getLoadedImageHeight(image);
+  const originX = Math.min(Math.max(0, crop.originX), Math.max(0, sourceWidth - 1));
+  const originY = Math.min(Math.max(0, crop.originY), Math.max(0, sourceHeight - 1));
+  const width = Math.min(crop.width, sourceWidth - originX);
+  const height = Math.min(crop.height, sourceHeight - originY);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.floor(width));
+  canvas.height = Math.max(1, Math.floor(height));
+  const context = get2dContext(canvas);
+  context.fillStyle = '#FFFFFF';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, originX, originY, width, height, 0, 0, canvas.width, canvas.height);
+  return {
+    uri: canvas.toDataURL('image/png'),
+    width: canvas.width,
+    height: canvas.height,
+  };
+}
+
+function isWebCanvasAvailable() {
+  return Platform.OS === 'web' && typeof document !== 'undefined';
+}
+
+function loadWebImage(uri: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = document.createElement('img');
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图片加载失败，无法裁剪'));
+    image.decoding = 'async';
+    image.src = uri;
+  });
+}
+
+function getLoadedImageWidth(image: HTMLImageElement) {
+  return image.naturalWidth || image.width;
+}
+
+function getLoadedImageHeight(image: HTMLImageElement) {
+  return image.naturalHeight || image.height;
+}
+
+function get2dContext(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('浏览器不支持 Canvas 图片处理');
+  return context;
 }
 
 async function exportBackupFile(data: AppData) {
@@ -1569,13 +1689,11 @@ function CropModal({
   }, [imageSize.height, imageSize.width, maxCanvasHeight, maxCanvasWidth]);
 
   const resetCropRect = () => {
-    const insetX = displaySize.width * 0.08;
-    const insetY = displaySize.height * 0.12;
     setCropRect({
-      x: insetX,
-      y: insetY,
-      width: Math.max(48, displaySize.width - insetX * 2),
-      height: Math.max(48, displaySize.height - insetY * 2),
+      x: 0,
+      y: 0,
+      width: Math.max(48, displaySize.width),
+      height: Math.max(48, displaySize.height),
     });
   };
 

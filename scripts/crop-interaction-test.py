@@ -75,19 +75,19 @@ def main():
         expect(page.locator('[aria-label="拖动裁剪框"]')).to_be_visible()
         expect(page.locator('[aria-label="缩放右下角"]')).to_be_visible()
 
+        before_resize = get_crop_rect(page)
+        drag_pointer(page, '[aria-label="缩放右下角"]', -72, -56)
+        page.wait_for_timeout(100)
+        after_resize = get_crop_rect(page)
+        assert after_resize["width"] < before_resize["width"] - 40, f"Crop width did not shrink: {before_resize} -> {after_resize}"
+        assert after_resize["height"] < before_resize["height"] - 30, f"Crop height did not shrink: {before_resize} -> {after_resize}"
+
         before_move = get_crop_rect(page)
         drag_pointer(page, '[aria-label="拖动裁剪框"]', 34, 22)
         page.wait_for_timeout(100)
         after_move = get_crop_rect(page)
         assert after_move["left"] > before_move["left"] + 20, f"Crop did not move right: {before_move} -> {after_move}"
         assert after_move["top"] > before_move["top"] + 12, f"Crop did not move down: {before_move} -> {after_move}"
-
-        before_resize = get_crop_rect(page)
-        drag_pointer(page, '[aria-label="缩放右下角"]', -44, -30)
-        page.wait_for_timeout(100)
-        after_resize = get_crop_rect(page)
-        assert after_resize["width"] < before_resize["width"] - 20, f"Crop width did not shrink: {before_resize} -> {after_resize}"
-        assert after_resize["height"] < before_resize["height"] - 12, f"Crop height did not shrink: {before_resize} -> {after_resize}"
 
         screenshot_dir = Path("/home/jk/appPindou-web/.tmp-crop")
         screenshot_dir.mkdir(exist_ok=True)

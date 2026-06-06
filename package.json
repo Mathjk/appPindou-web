@@ -30,7 +30,8 @@
     "typecheck": "tsc --noEmit",
     "test:domain": "rm -rf .tmp-smoke && tsc scripts/domain-smoke-test.ts src/domain.ts src/data/mard291.ts src/types.ts --ignoreConfig --module commonjs --target es2020 --outDir .tmp-smoke --esModuleInterop --skipLibCheck && node .tmp-smoke/scripts/domain-smoke-test.js",
     "test:web": "python scripts/web-smoke-test.py",
-    "test:crop": "python scripts/crop-interaction-test.py"
+    "test:crop": "python scripts/crop-interaction-test.py",
+    "test:ocr-image": "python scripts/ocr-image-pipeline-test.py"
   },
   "private": true
 }
