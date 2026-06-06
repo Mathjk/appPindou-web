@@ -1,0 +1,35 @@
+{
+  "name": "apppindou",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "expo": "~56.0.9",
+    "expo-clipboard": "~56.0.3",
+    "expo-file-system": "~56.0.7",
+    "expo-image-manipulator": "^56.0.17",
+    "expo-image-picker": "~56.0.15",
+    "expo-status-bar": "~56.0.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "web:dev": "expo start --web --port 8082",
+    "build:web": "expo export -p web --output-dir dist && node scripts/prepare-static-site.js",
+    "build:web:local": "PUBLIC_URL= npm run build:web",
+    "typecheck": "tsc --noEmit",
+    "test:domain": "rm -rf .tmp-smoke && tsc scripts/domain-smoke-test.ts src/domain.ts src/data/mard291.ts src/types.ts --ignoreConfig --module commonjs --target es2020 --outDir .tmp-smoke --esModuleInterop --skipLibCheck && node .tmp-smoke/scripts/domain-smoke-test.js",
+    "test:web": "python scripts/web-smoke-test.py"
+  },
+  "private": true
+}
