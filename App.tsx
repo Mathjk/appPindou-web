@@ -79,24 +79,41 @@ type AiPreset = {
   endpoint: string;
   model: string;
   note: string;
+  models: AiModelOption[];
+};
+
+type AiModelOption = {
+  label: string;
+  model: string;
+  endpoint?: string;
+  note?: string;
 };
 
 const TEXT_MODEL_PRESETS: AiPreset[] = [
   {
     id: 'openrouter-free',
-    title: 'OpenRouter Free',
+    title: 'OpenRouter',
     tag: '免费路由',
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     model: 'openrouter/free',
     note: '最适合先试用，会自动选择可用免费模型；稳定性取决于当前免费池。',
+    models: [
+      { label: 'Free Router', model: 'openrouter/free', note: '自动选择当前可用免费聊天模型。' },
+      { label: 'Auto Router', model: 'openrouter/auto', note: '按请求自动路由，可能产生费用。' },
+    ],
   },
   {
     id: 'deepseek-v4-flash',
-    title: 'DeepSeek V4 Flash',
+    title: 'DeepSeek',
     tag: '默认推荐',
     endpoint: 'https://api.deepseek.com/chat/completions',
     model: 'deepseek-v4-flash',
     note: '适合把 OCR 原文整理成 JSON，用量低、中文指令稳定。',
+    models: [
+      { label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', note: '当前默认。' },
+      { label: 'DeepSeek Chat', model: 'deepseek-chat' },
+      { label: 'DeepSeek Reasoner', model: 'deepseek-reasoner' },
+    ],
   },
   {
     id: 'mistral-small',
@@ -105,6 +122,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.mistral.ai/v1/chat/completions',
     model: 'mistral-small-latest',
     note: '免费模式适合评估和原型；长期使用需要关注限额。',
+    models: [
+      { label: 'Mistral Small Latest', model: 'mistral-small-latest' },
+      { label: 'Mistral Medium Latest', model: 'mistral-medium-latest' },
+      { label: 'Mistral Large Latest', model: 'mistral-large-latest' },
+    ],
   },
   {
     id: 'groq-llama',
@@ -113,6 +135,12 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.groq.com/openai/v1/chat/completions',
     model: 'llama-3.3-70b-versatile',
     note: 'OpenAI-compatible，适合低延迟文本整理。',
+    models: [
+      { label: 'Llama 3.3 70B Versatile', model: 'llama-3.3-70b-versatile' },
+      { label: 'Llama 3.1 8B Instant', model: 'llama-3.1-8b-instant' },
+      { label: 'GPT OSS 120B', model: 'openai/gpt-oss-120b' },
+      { label: 'GPT OSS 20B', model: 'openai/gpt-oss-20b' },
+    ],
   },
   {
     id: 'hf-router',
@@ -121,6 +149,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://router.huggingface.co/v1/chat/completions',
     model: 'openai/gpt-oss-120b:fastest',
     note: '可换成 HF Inference Providers 里当前可用的聊天模型。',
+    models: [
+      { label: 'GPT OSS 120B Fastest', model: 'openai/gpt-oss-120b:fastest' },
+      { label: 'GPT OSS 20B Fastest', model: 'openai/gpt-oss-20b:fastest' },
+      { label: 'Qwen2.5 7B Instruct', model: 'Qwen/Qwen2.5-7B-Instruct:fastest' },
+    ],
   },
   {
     id: 'cohere-command',
@@ -129,6 +162,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.cohere.ai/compatibility/v1/chat/completions',
     model: 'command-a-plus-05-2026',
     note: '通过 Compatibility API 接入，适合文本整理和结构化输出。',
+    models: [
+      { label: 'Command A Plus', model: 'command-a-plus-05-2026' },
+      { label: 'Command A', model: 'command-a-03-2025' },
+      { label: 'Command R Plus', model: 'command-r-plus' },
+    ],
   },
   {
     id: 'cloudflare-workers',
@@ -137,6 +175,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions',
     model: '@cf/meta/llama-3.1-8b-instruct',
     note: '需要把 {account_id} 替换成自己的 Cloudflare Account ID。',
+    models: [
+      { label: 'Llama 3.1 8B Instruct', model: '@cf/meta/llama-3.1-8b-instruct' },
+      { label: 'Llama 3.1 70B Instruct', model: '@cf/meta/llama-3.1-70b-instruct' },
+      { label: 'Llama 3.3 70B Fast', model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast' },
+    ],
   },
   {
     id: 'cerebras-gpt-oss',
@@ -145,6 +188,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.cerebras.ai/v1/chat/completions',
     model: 'gpt-oss-120b',
     note: 'OpenAI-compatible，适合大模型高速文本整理。',
+    models: [
+      { label: 'GPT OSS 120B', model: 'gpt-oss-120b' },
+      { label: 'GPT OSS 20B', model: 'gpt-oss-20b' },
+      { label: 'Llama 3.3 70B', model: 'llama-3.3-70b' },
+    ],
   },
   {
     id: 'openai-mini',
@@ -153,6 +201,11 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.openai.com/v1/chat/completions',
     model: 'gpt-4.1-mini',
     note: '主流稳定方案，成本低于旗舰模型，也可换成账号内可用的新模型。',
+    models: [
+      { label: 'GPT-4.1 Mini', model: 'gpt-4.1-mini' },
+      { label: 'GPT-4.1', model: 'gpt-4.1' },
+      { label: 'GPT-4o Mini', model: 'gpt-4o-mini' },
+    ],
   },
   {
     id: 'gemini-flash',
@@ -161,6 +214,24 @@ const TEXT_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     model: 'gemini-2.5-flash',
     note: 'Gemini OpenAI compatibility 接口，可用于文本整理。',
+    models: [
+      { label: 'Gemini 2.5 Flash', model: 'gemini-2.5-flash' },
+      { label: 'Gemini 2.5 Pro', model: 'gemini-2.5-pro' },
+      { label: 'Gemini 2.0 Flash', model: 'gemini-2.0-flash' },
+    ],
+  },
+  {
+    id: 'anthropic-claude',
+    title: 'Anthropic Claude',
+    tag: '已适配',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    model: 'claude-sonnet-4-20250514',
+    note: '使用 Anthropic Messages API，文本整理和视觉识别都已单独适配。',
+    models: [
+      { label: 'Claude Sonnet 4', model: 'claude-sonnet-4-20250514' },
+      { label: 'Claude Opus 4.1', model: 'claude-opus-4-1-20250805' },
+      { label: 'Claude 3.5 Haiku', model: 'claude-3-5-haiku-latest' },
+    ],
   },
 ];
 
@@ -172,6 +243,11 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.ocr.space/parse/image',
     model: 'ocr.space-engine2',
     note: '当前默认方案；免费测试 key 可走通流程，稳定使用建议换自己的 key。',
+    models: [
+      { label: 'Engine 2', model: 'ocr.space-engine2' },
+      { label: 'Engine 1', model: 'ocr.space-engine1' },
+      { label: 'Engine 3', model: 'ocr.space-engine3' },
+    ],
   },
   {
     id: 'openrouter-vision',
@@ -180,6 +256,10 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     model: 'openrouter/free',
     note: '当前代码支持 image_url 消息；路由会筛选支持图片理解的免费模型。',
+    models: [
+      { label: 'Free Vision Router', model: 'openrouter/free' },
+      { label: 'Auto Router', model: 'openrouter/auto' },
+    ],
   },
   {
     id: 'groq-vision',
@@ -188,6 +268,10 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.groq.com/openai/v1/chat/completions',
     model: 'meta-llama/llama-4-scout-17b-16e-instruct',
     note: '支持 image_url 的视觉模型；裁剪图过大时需要注意请求大小限制。',
+    models: [
+      { label: 'Llama 4 Scout Vision', model: 'meta-llama/llama-4-scout-17b-16e-instruct' },
+      { label: 'Llama 4 Maverick Vision', model: 'meta-llama/llama-4-maverick-17b-128e-instruct' },
+    ],
   },
   {
     id: 'mistral-vision',
@@ -196,6 +280,22 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.mistral.ai/v1/chat/completions',
     model: 'mistral-small-2506',
     note: '走 Mistral Chat Completions 视觉模型；不同于 Mistral 专用 OCR 接口。',
+    models: [
+      { label: 'Mistral Small 2506 Vision', model: 'mistral-small-2506' },
+      { label: 'Pixtral 12B', model: 'pixtral-12b-latest' },
+      { label: 'Pixtral Large', model: 'pixtral-large-latest' },
+    ],
+  },
+  {
+    id: 'mistral-ocr',
+    title: 'Mistral OCR',
+    tag: '已适配',
+    endpoint: 'https://api.mistral.ai/v1/ocr',
+    model: 'mistral-ocr-latest',
+    note: '使用 Mistral 专用 OCR API，适合直接抽取图中文字。',
+    models: [
+      { label: 'Mistral OCR Latest', model: 'mistral-ocr-latest' },
+    ],
   },
   {
     id: 'openai-vision',
@@ -204,6 +304,11 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://api.openai.com/v1/chat/completions',
     model: 'gpt-4.1-mini',
     note: '适合直接从裁剪图里识别色号和数量；需要 OpenAI API key。',
+    models: [
+      { label: 'GPT-4.1 Mini Vision', model: 'gpt-4.1-mini' },
+      { label: 'GPT-4.1 Vision', model: 'gpt-4.1' },
+      { label: 'GPT-4o Mini Vision', model: 'gpt-4o-mini' },
+    ],
   },
   {
     id: 'gemini-vision',
@@ -212,6 +317,11 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     model: 'gemini-2.5-flash',
     note: 'Gemini OpenAI compatibility 支持图片输入，可作为 OCR.space 的替代。',
+    models: [
+      { label: 'Gemini 2.5 Flash Vision', model: 'gemini-2.5-flash' },
+      { label: 'Gemini 2.5 Pro Vision', model: 'gemini-2.5-pro' },
+      { label: 'Gemini 2.0 Flash Vision', model: 'gemini-2.0-flash' },
+    ],
   },
   {
     id: 'hf-vlm',
@@ -220,24 +330,45 @@ const VISION_MODEL_PRESETS: AiPreset[] = [
     endpoint: 'https://router.huggingface.co/v1/chat/completions',
     model: 'Qwen/Qwen2.5-VL-3B-Instruct:fastest',
     note: '适合尝试开源视觉语言模型；可换成 HF 当前可用的 VLM。',
+    models: [
+      { label: 'Qwen2.5 VL 3B Fastest', model: 'Qwen/Qwen2.5-VL-3B-Instruct:fastest' },
+      { label: 'Llama 3.2 11B Vision', model: 'meta-llama/Llama-3.2-11B-Vision-Instruct:fastest' },
+    ],
   },
-];
-
-const FUTURE_AI_ADAPTERS = [
   {
+    id: 'azure-vision-read',
     title: 'Azure AI Vision',
-    tag: '后续适配',
-    note: 'Read/OCR 是异步 REST 协议，会返回 Operation-Location；不能直接填进当前 chat completions。',
+    tag: '已适配',
+    endpoint: 'https://{resource}.cognitiveservices.azure.com/imageanalysis:analyze?features=read&api-version=2024-02-01',
+    model: 'azure-vision-read-2024-02-01',
+    note: '使用 Image Analysis 4.0 Read OCR，同步返回 readResult；需要替换 {resource}。',
+    models: [
+      { label: 'Read OCR 2024-02-01', model: 'azure-vision-read-2024-02-01' },
+    ],
   },
   {
+    id: 'anthropic-vision',
     title: 'Anthropic Claude',
-    tag: '后续适配',
-    note: '原生 Messages API 使用 x-api-key 和 anthropic-version 头；需要单独请求适配。',
+    tag: '已适配',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    model: 'claude-sonnet-4-20250514',
+    note: '使用 Anthropic Messages API 视觉格式，图片以 base64 块发送。',
+    models: [
+      { label: 'Claude Sonnet 4 Vision', model: 'claude-sonnet-4-20250514' },
+      { label: 'Claude Opus 4.1 Vision', model: 'claude-opus-4-1-20250805' },
+      { label: 'Claude 3.5 Haiku Vision', model: 'claude-3-5-haiku-latest' },
+    ],
   },
   {
+    id: 'cloudflare-vision',
     title: 'Cloudflare Workers AI 视觉',
-    tag: '后续适配',
-    note: '文本可走 OpenAI-compatible；视觉模型需要按 Workers AI 当前模型接口单独确认和适配。',
+    tag: '已适配',
+    endpoint: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.2-11b-vision-instruct',
+    model: '@cf/meta/llama-3.2-11b-vision-instruct',
+    note: '使用 Workers AI 原生 /ai/run 视觉模型；需要替换 {account_id}。',
+    models: [
+      { label: 'Llama 3.2 11B Vision', model: '@cf/meta/llama-3.2-11b-vision-instruct' },
+    ],
   },
 ];
 
@@ -248,6 +379,28 @@ function normalizeSearchQuery(value: string) {
 function getSearchSeries(value: string) {
   const normalized = normalizeSearchQuery(value).trim();
   return SEARCH_SERIES_ORDER.find((item) => normalized === item || new RegExp(`^${item}\\d*$`).test(normalized));
+}
+
+function getAiModelOptions(preset?: AiPreset) {
+  return preset?.models?.length
+    ? preset.models
+    : preset
+      ? [{ label: preset.model, model: preset.model, note: preset.note }]
+      : [];
+}
+
+function findAiPreset(presets: AiPreset[], endpoint: string, model: string) {
+  const trimmedEndpoint = endpoint.trim();
+  const trimmedModel = model.trim();
+  return (
+    presets.find((preset) => preset.endpoint === trimmedEndpoint && preset.model === trimmedModel) ??
+    presets.find((preset) => preset.endpoint === trimmedEndpoint && getAiModelOptions(preset).some((option) => option.model === trimmedModel)) ??
+    presets.find((preset) => preset.endpoint === trimmedEndpoint)
+  );
+}
+
+function findAiModelOption(preset: AiPreset | undefined, model: string) {
+  return getAiModelOptions(preset).find((option) => option.model === model.trim());
 }
 
 function useResponsiveViewport() {
@@ -1343,12 +1496,16 @@ function SettingsScreen({
   const [aiOcrTextApiKey, setAiOcrTextApiKey] = useState(data.settings.aiOcrTextApiKey);
   const [aiOcrTextEndpoint, setAiOcrTextEndpoint] = useState(data.settings.aiOcrTextEndpoint);
   const [aiOcrTextModel, setAiOcrTextModel] = useState(data.settings.aiOcrTextModel);
-  const [aiOcrUseSameKey, setAiOcrUseSameKey] = useState(data.settings.aiOcrUseSameKey);
+  const [visionProviderOpen, setVisionProviderOpen] = useState(false);
+  const [visionModelOpen, setVisionModelOpen] = useState(false);
+  const [textProviderOpen, setTextProviderOpen] = useState(false);
+  const [textModelOpen, setTextModelOpen] = useState(false);
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
-  const canReuseAiOcrKey = !aiOcrEndpoint.trim().toLowerCase().includes('ocr.space') && !aiOcrModel.trim().toLowerCase().startsWith('ocr.space');
-  const activeVisionPresetId = VISION_MODEL_PRESETS.find((preset) => preset.endpoint === aiOcrEndpoint.trim() && preset.model === aiOcrModel.trim())?.id;
-  const activeTextPresetId = TEXT_MODEL_PRESETS.find((preset) => preset.endpoint === aiOcrTextEndpoint.trim() && preset.model === aiOcrTextModel.trim())?.id;
+  const activeVisionPreset = findAiPreset(VISION_MODEL_PRESETS, aiOcrEndpoint, aiOcrModel);
+  const activeTextPreset = findAiPreset(TEXT_MODEL_PRESETS, aiOcrTextEndpoint, aiOcrTextModel);
+  const activeVisionModel = findAiModelOption(activeVisionPreset, aiOcrModel);
+  const activeTextModel = findAiModelOption(activeTextPreset, aiOcrTextModel);
 
   useEffect(() => {
     if (resetCountdown <= 0) return;
@@ -1372,7 +1529,6 @@ function SettingsScreen({
     setAiOcrTextApiKey(data.settings.aiOcrTextApiKey);
     setAiOcrTextEndpoint(data.settings.aiOcrTextEndpoint);
     setAiOcrTextModel(data.settings.aiOcrTextModel);
-    setAiOcrUseSameKey(data.settings.aiOcrEndpoint?.includes('ocr.space') ? false : data.settings.aiOcrUseSameKey);
   }, [data.settings]);
 
   const saveSettings = () => {
@@ -1391,22 +1547,38 @@ function SettingsScreen({
   };
 
   const applyVisionPreset = (preset: AiPreset) => {
+    const defaultModel = getAiModelOptions(preset)[0]?.model ?? preset.model;
     setAiOcrEndpoint(preset.endpoint);
-    setAiOcrModel(preset.model);
-    if (preset.endpoint.includes('ocr.space') || preset.model.startsWith('ocr.space')) {
-      setAiOcrUseSameKey(false);
-    }
-    setNotice(`已套用图片识别预设：${preset.title}`);
+    setAiOcrModel(defaultModel);
+    setVisionProviderOpen(false);
+    setVisionModelOpen(true);
+    setNotice(`已选择图片识别供应商：${preset.title}`);
+  };
+
+  const applyVisionModel = (option: AiModelOption) => {
+    if (option.endpoint) setAiOcrEndpoint(option.endpoint);
+    setAiOcrModel(option.model);
+    setVisionModelOpen(false);
+    setNotice(`已选择图片识别模型：${option.label}`);
   };
 
   const applyTextPreset = (preset: AiPreset) => {
+    const defaultModel = getAiModelOptions(preset)[0]?.model ?? preset.model;
     setAiOcrTextEndpoint(preset.endpoint);
-    setAiOcrTextModel(preset.model);
-    setNotice(`已套用文本模型预设：${preset.title}`);
+    setAiOcrTextModel(defaultModel);
+    setTextProviderOpen(false);
+    setTextModelOpen(true);
+    setNotice(`已选择文本模型供应商：${preset.title}`);
+  };
+
+  const applyTextModel = (option: AiModelOption) => {
+    if (option.endpoint) setAiOcrTextEndpoint(option.endpoint);
+    setAiOcrTextModel(option.model);
+    setTextModelOpen(false);
+    setNotice(`已选择文本模型：${option.label}`);
   };
 
   const saveAiOcrSettings = () => {
-    const nextUseSameKey = canReuseAiOcrKey && aiOcrUseSameKey;
     updateData(
       (current) => ({
         ...current,
@@ -1415,10 +1587,10 @@ function SettingsScreen({
           aiOcrApiKey: aiOcrApiKey.trim(),
           aiOcrEndpoint: aiOcrEndpoint.trim() || 'https://api.ocr.space/parse/image',
           aiOcrModel: aiOcrModel.trim() || 'ocr.space-engine2',
-          aiOcrTextApiKey: nextUseSameKey ? '' : aiOcrTextApiKey.trim(),
+          aiOcrTextApiKey: aiOcrTextApiKey.trim(),
           aiOcrTextEndpoint: aiOcrTextEndpoint.trim() || 'https://api.deepseek.com/chat/completions',
           aiOcrTextModel: aiOcrTextModel.trim() || 'deepseek-v4-flash',
-          aiOcrUseSameKey: nextUseSameKey,
+          aiOcrUseSameKey: false,
         },
       }),
       '修改 OCR 接口设置',
@@ -1489,21 +1661,31 @@ function SettingsScreen({
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>OCR 与模型</Text>
         <Text style={styles.muted}>
-          图片识别先把图纸裁剪区转成文本，文本模型再把 OCR 原文整理成 MARD 色号和颗数。当前可直接套用 OpenAI-compatible
-          /chat/completions 供应商；不兼容协议先列在后续适配。
+          图片识别先把图纸裁剪区转成文本，文本模型再把 OCR 原文整理成 MARD 色号和颗数。OpenAI-compatible
+          /chat/completions 可直接使用；Azure、Anthropic、Mistral OCR、Cloudflare Workers AI 已内置单独适配。
         </Text>
 
-        <Text style={styles.aiSectionTitle}>图片识别预设</Text>
-        <View style={styles.presetGrid}>
-          {VISION_MODEL_PRESETS.map((preset) => (
-            <AiPresetCard
-              key={preset.id}
-              preset={preset}
-              active={activeVisionPresetId === preset.id}
-              onPress={() => applyVisionPreset(preset)}
-            />
-          ))}
-        </View>
+        <AiConfigSelector
+          title="图片识别"
+          providerLabel="识别服务"
+          modelLabel="识别模型"
+          presets={VISION_MODEL_PRESETS}
+          selectedPreset={activeVisionPreset}
+          selectedModel={activeVisionModel}
+          customModel={aiOcrModel}
+          providerOpen={visionProviderOpen}
+          modelOpen={visionModelOpen}
+          onToggleProvider={() => {
+            setVisionProviderOpen((open) => !open);
+            setVisionModelOpen(false);
+          }}
+          onToggleModel={() => {
+            setVisionModelOpen((open) => !open);
+            setVisionProviderOpen(false);
+          }}
+          onSelectProvider={applyVisionPreset}
+          onSelectModel={applyVisionModel}
+        />
 
         <LabeledInput label="OCR API Key" value={aiOcrApiKey} onChangeText={setAiOcrApiKey} placeholder="helloworld" secureTextEntry autoCapitalize="none" />
         <LabeledInput
@@ -1517,36 +1699,29 @@ function SettingsScreen({
 
         <View style={styles.divider} />
 
-        <Text style={styles.aiSectionTitle}>文本整理预设</Text>
-        <View style={styles.presetGrid}>
-          {TEXT_MODEL_PRESETS.map((preset) => (
-            <AiPresetCard
-              key={preset.id}
-              preset={preset}
-              active={activeTextPresetId === preset.id}
-              onPress={() => applyTextPreset(preset)}
-            />
-          ))}
-        </View>
+        <AiConfigSelector
+          title="文本整理"
+          providerLabel="文本服务"
+          modelLabel="文本模型"
+          presets={TEXT_MODEL_PRESETS}
+          selectedPreset={activeTextPreset}
+          selectedModel={activeTextModel}
+          customModel={aiOcrTextModel}
+          providerOpen={textProviderOpen}
+          modelOpen={textModelOpen}
+          onToggleProvider={() => {
+            setTextProviderOpen((open) => !open);
+            setTextModelOpen(false);
+          }}
+          onToggleModel={() => {
+            setTextModelOpen((open) => !open);
+            setTextProviderOpen(false);
+          }}
+          onSelectProvider={applyTextPreset}
+          onSelectModel={applyTextModel}
+        />
 
-        <Pressable
-          disabled={!canReuseAiOcrKey}
-          style={[styles.checkRow, !canReuseAiOcrKey && styles.disabledBlock]}
-          onPress={() => setAiOcrUseSameKey((current) => !current)}
-        >
-          <View style={[styles.checkbox, aiOcrUseSameKey && styles.checkboxActive]}>
-            <Text style={styles.checkboxText}>{aiOcrUseSameKey ? '✓' : ''}</Text>
-          </View>
-          <View style={styles.flex}>
-            <Text style={styles.codeText}>文本模型复用 OCR API Key</Text>
-            <Text style={styles.muted}>
-              {canReuseAiOcrKey ? '关闭后可以为 deepseek-flash / deepseek-v4-flash 单独填写 key。' : 'OCR.space 的 key 不能用于 DeepSeek，需要单独填写文本 API Key。'}
-            </Text>
-          </View>
-        </Pressable>
-        {aiOcrUseSameKey ? null : (
-          <LabeledInput label="文本 API Key" value={aiOcrTextApiKey} onChangeText={setAiOcrTextApiKey} placeholder="sk-..." secureTextEntry autoCapitalize="none" />
-        )}
+        <LabeledInput label="文本 API Key" value={aiOcrTextApiKey} onChangeText={setAiOcrTextApiKey} placeholder="sk-..." secureTextEntry autoCapitalize="none" />
         <LabeledInput
           label="文本 Endpoint"
           value={aiOcrTextEndpoint}
@@ -1555,19 +1730,6 @@ function SettingsScreen({
           autoCapitalize="none"
         />
         <LabeledInput label="文本模型" value={aiOcrTextModel} onChangeText={setAiOcrTextModel} placeholder="deepseek-v4-flash" autoCapitalize="none" />
-
-        <Text style={styles.aiSectionTitle}>后续适配</Text>
-        <View style={styles.futureAdapterList}>
-          {FUTURE_AI_ADAPTERS.map((adapter) => (
-            <View key={adapter.title} style={styles.futureAdapter}>
-              <View style={styles.presetHeader}>
-                <Text style={styles.presetTitle}>{adapter.title}</Text>
-                <Text style={styles.presetTag}>{adapter.tag}</Text>
-              </View>
-              <Text style={styles.muted}>{adapter.note}</Text>
-            </View>
-          ))}
-        </View>
 
         <ActionButton label="保存 OCR 设置" onPress={saveAiOcrSettings} tone="amber" />
       </View>
@@ -1590,25 +1752,27 @@ function SettingsScreen({
           </View>
         </View>
         {data.actionHistory.length ? (
-          data.actionHistory.slice(0, 30).map((entry) => (
-            <View key={entry.id} style={styles.historyRow}>
-              <View style={styles.flex}>
-                <Text style={[styles.codeText, entry.undoneAt && styles.historyUndone]}>{entry.label}</Text>
-                <Text style={styles.muted}>
-                  {formatHistoryTime(entry.createdAt)}
-                  {entry.undoneAt ? ` · 已恢复 ${formatHistoryTime(entry.undoneAt)}` : ''}
-                </Text>
+          <ScrollView style={styles.historyScrollBox} nestedScrollEnabled showsVerticalScrollIndicator>
+            {data.actionHistory.slice(0, 30).map((entry) => (
+              <View key={entry.id} style={styles.historyRow}>
+                <View style={styles.flex}>
+                  <Text style={[styles.codeText, entry.undoneAt && styles.historyUndone]}>{entry.label}</Text>
+                  <Text style={styles.muted}>
+                    {formatHistoryTime(entry.createdAt)}
+                    {entry.undoneAt ? ` · 已恢复 ${formatHistoryTime(entry.undoneAt)}` : ''}
+                  </Text>
+                </View>
+                <View style={styles.historyActions}>
+                  <Pressable style={[styles.smallAction, entry.undoneAt && styles.smallActionDisabled]} disabled={Boolean(entry.undoneAt)} onPress={() => undoHistory(entry.id, entry.label)}>
+                    <Text style={styles.smallActionText}>撤销</Text>
+                  </Pressable>
+                  <Pressable style={styles.smallAction} onPress={() => rollbackHistory(entry.id, entry.label)}>
+                    <Text style={styles.smallActionText}>回退</Text>
+                  </Pressable>
+                </View>
               </View>
-              <View style={styles.historyActions}>
-                <Pressable style={[styles.smallAction, entry.undoneAt && styles.smallActionDisabled]} disabled={Boolean(entry.undoneAt)} onPress={() => undoHistory(entry.id, entry.label)}>
-                  <Text style={styles.smallActionText}>撤销</Text>
-                </Pressable>
-                <Pressable style={styles.smallAction} onPress={() => rollbackHistory(entry.id, entry.label)}>
-                  <Text style={styles.smallActionText}>回退</Text>
-                </Pressable>
-              </View>
-            </View>
-          ))
+            ))}
+          </ScrollView>
         ) : (
           <Text style={styles.muted}>还没有历史操作。</Text>
         )}
@@ -1898,18 +2062,89 @@ function LabeledInput({
   );
 }
 
-function AiPresetCard({ preset, active, onPress }: { preset: AiPreset; active?: boolean; onPress: () => void }) {
+function AiConfigSelector({
+  title,
+  providerLabel,
+  modelLabel,
+  presets,
+  selectedPreset,
+  selectedModel,
+  customModel,
+  providerOpen,
+  modelOpen,
+  onToggleProvider,
+  onToggleModel,
+  onSelectProvider,
+  onSelectModel,
+}: {
+  title: string;
+  providerLabel: string;
+  modelLabel: string;
+  presets: AiPreset[];
+  selectedPreset?: AiPreset;
+  selectedModel?: AiModelOption;
+  customModel: string;
+  providerOpen: boolean;
+  modelOpen: boolean;
+  onToggleProvider: () => void;
+  onToggleModel: () => void;
+  onSelectProvider: (preset: AiPreset) => void;
+  onSelectModel: (option: AiModelOption) => void;
+}) {
+  const modelOptions = getAiModelOptions(selectedPreset);
   return (
-    <Pressable style={[styles.presetCard, active && styles.presetCardActive]} onPress={onPress}>
-      <View style={styles.presetHeader}>
-        <Text style={[styles.presetTitle, active && styles.presetTitleActive]}>{preset.title}</Text>
-        <Text style={[styles.presetTag, active && styles.presetTagActive]}>{preset.tag}</Text>
-      </View>
-      <Text style={styles.presetModel} numberOfLines={1}>
-        {preset.model}
-      </Text>
-      <Text style={styles.muted}>{preset.note}</Text>
-    </Pressable>
+    <View style={styles.aiSelector}>
+      <Text style={styles.aiSectionTitle}>{title}</Text>
+
+      <Pressable style={styles.selectSummary} onPress={onToggleProvider}>
+        <View style={styles.flex}>
+          <Text style={styles.selectLabel}>{providerLabel}</Text>
+          <Text style={styles.selectValue}>{selectedPreset?.title ?? '自定义接口'}</Text>
+          <Text style={styles.muted} numberOfLines={2}>{selectedPreset?.note ?? '当前 endpoint 未匹配内置供应商，可继续手动填写。'}</Text>
+        </View>
+        <Text style={styles.selectChevron}>{providerOpen ? '收起' : '选择'}</Text>
+      </Pressable>
+
+      {providerOpen ? (
+        <View style={styles.optionList}>
+          {presets.map((preset) => (
+            <Pressable key={preset.id} style={[styles.optionRow, selectedPreset?.id === preset.id && styles.optionRowActive]} onPress={() => onSelectProvider(preset)}>
+              <View style={styles.flex}>
+                <View style={styles.optionHeader}>
+                  <Text style={[styles.optionTitle, selectedPreset?.id === preset.id && styles.optionTitleActive]}>{preset.title}</Text>
+                  <Text style={[styles.optionTag, selectedPreset?.id === preset.id && styles.optionTagActive]}>{preset.tag}</Text>
+                </View>
+                <Text style={styles.optionNote}>{preset.note}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      <Pressable style={styles.selectSummary} onPress={onToggleModel}>
+        <View style={styles.flex}>
+          <Text style={styles.selectLabel}>{modelLabel}</Text>
+          <Text style={styles.selectValue}>{selectedModel?.label ?? (customModel || '自定义模型')}</Text>
+          <Text style={styles.optionModel} numberOfLines={1}>{customModel || '未填写'}</Text>
+        </View>
+        <Text style={styles.selectChevron}>{modelOpen ? '收起' : '选择'}</Text>
+      </Pressable>
+
+      {modelOpen ? (
+        <View style={styles.optionList}>
+          {modelOptions.map((option) => (
+            <Pressable key={`${option.endpoint ?? selectedPreset?.endpoint ?? 'custom'}:${option.model}`} style={[styles.optionRow, option.model === customModel && styles.optionRowActive]} onPress={() => onSelectModel(option)}>
+              <View style={styles.flex}>
+                <Text style={[styles.optionTitle, option.model === customModel && styles.optionTitleActive]}>{option.label}</Text>
+                <Text style={styles.optionModel} numberOfLines={1}>{option.model}</Text>
+                {option.note ? <Text style={styles.optionNote}>{option.note}</Text> : null}
+              </View>
+            </Pressable>
+          ))}
+          {modelOptions.length ? null : <Text style={styles.muted}>当前自定义 endpoint 没有内置模型列表，可直接编辑下面的模型输入框。</Text>}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -3232,40 +3467,77 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '900',
   },
-  presetGrid: {
+  aiSelector: {
     gap: 8,
     marginBottom: 10,
   },
-  presetCard: {
+  selectSummary: {
+    minHeight: 56,
     padding: 11,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.lineStrong,
     backgroundColor: colors.white,
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
   },
-  presetCardActive: {
+  selectLabel: {
+    color: colors.inkSoft,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  selectValue: {
+    color: colors.ink,
+    fontFamily: fonts.text,
+    fontSize: 16,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  selectChevron: {
+    color: colors.blue,
+    backgroundColor: colors.blueSoft,
+    borderRadius: 8,
+    overflow: 'hidden',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  optionList: {
+    gap: 8,
+    marginBottom: 2,
+  },
+  optionRow: {
+    padding: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panelTint,
+    gap: 6,
+  },
+  optionRowActive: {
     borderColor: colors.blue,
     backgroundColor: colors.blueSoft,
   },
-  presetHeader: {
+  optionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
-  presetTitle: {
+  optionTitle: {
     color: colors.ink,
     fontFamily: fonts.text,
     fontWeight: '900',
     flexShrink: 1,
   },
-  presetTitleActive: {
+  optionTitleActive: {
     color: colors.blue,
   },
-  presetTag: {
+  optionTag: {
     color: colors.blue,
-    backgroundColor: colors.blueSoft,
+    backgroundColor: colors.white,
     borderRadius: 8,
     overflow: 'hidden',
     paddingHorizontal: 7,
@@ -3273,27 +3545,21 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '900',
   },
-  presetTagActive: {
+  optionTagActive: {
     color: '#FFFFFF',
     backgroundColor: colors.blue,
   },
-  presetModel: {
-    color: colors.ink,
+  optionModel: {
+    color: colors.inkSoft,
     fontSize: 12,
     fontFamily: fonts.mono,
     fontWeight: '800',
   },
-  futureAdapterList: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  futureAdapter: {
-    padding: 11,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E7B24D',
-    backgroundColor: colors.amberSoft,
-    gap: 6,
+  optionNote: {
+    color: colors.muted,
+    lineHeight: 18,
+    fontFamily: fonts.text,
+    fontSize: 12,
   },
   statsGrid: {
     flexDirection: 'row',
@@ -3357,6 +3623,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E7B24D',
     borderRadius: 8,
+  },
+  historyScrollBox: {
+    maxHeight: 310,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 8,
+    backgroundColor: colors.panelTint,
   },
   historyRow: {
     flexDirection: 'row',

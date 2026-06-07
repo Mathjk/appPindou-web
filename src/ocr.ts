@@ -45,6 +45,30 @@ type OcrSpaceResponse = {
   IsErroredOnProcessing?: boolean;
   ErrorMessage?: string | string[];
 };
+type AnthropicResponse = {
+  content?: Array<{ type?: string; text?: string }>;
+  error?: { message?: string };
+};
+type AzureImageAnalysisResponse = {
+  readResult?: {
+    blocks?: Array<{
+      lines?: Array<{ text?: string }>;
+    }>;
+  };
+  error?: { message?: string; code?: string };
+};
+type MistralOcrResponse = {
+  pages?: Array<{ markdown?: string; text?: string }>;
+  markdown?: string;
+  text?: string;
+  error?: { message?: string };
+};
+type CloudflareRunResponse = {
+  success?: boolean;
+  result?: { response?: string; text?: string };
+  response?: string;
+  errors?: Array<{ message?: string }>;
+};
 
 const DEFAULT_OCR_SPACE_ENDPOINT = 'https://api.ocr.space/parse/image';
 const DEFAULT_OCR_SPACE_KEY = 'helloworld';
@@ -94,29 +118,7 @@ async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): 
 
   try {
     const imageDataUrl = await imageUriToDataUrl(imageUri);
-    const visionText = isOcrSpaceEndpoint(config.visionEndpoint, config.visionModel)
-      ? await callOcrSpace({
-          endpoint: config.visionEndpoint,
-          apiKey: config.visionApiKey,
-          model: config.visionModel,
-          imageDataUrl,
-        })
-      : await callOpenAiCompatibleChat({
-          endpoint: config.visionEndpoint,
-          apiKey: config.visionApiKey,
-          model: config.visionModel,
-          messages: [
-            { role: 'system', content: DEFAULT_VISION_PROMPT },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: '请识别这张拼豆图纸裁剪区域里的色号/颜色名和数量。' },
-                { type: 'image_url', image_url: { url: imageDataUrl } },
-              ],
-            },
-          ],
-          maxTokens: 1600,
-        });
+    const visionText = await callVisionRecognition(config, imageDataUrl);
 
     const localItems = parsePatternOcrText(visionText);
     let refineError = '';
@@ -184,15 +186,76 @@ function buildTextParserResult(rawText: string): OcrDraftResult {
 function normalizeAiOcrSettings(settings?: AppSettings) {
   const visionEndpoint = settings?.aiOcrEndpoint.trim() || DEFAULT_OCR_SPACE_ENDPOINT;
   const visionModel = settings?.aiOcrModel.trim() || DEFAULT_VISION_MODEL;
-  const shouldReuseKey = Boolean(settings?.aiOcrUseSameKey) && !isOcrSpaceEndpoint(visionEndpoint, visionModel);
   return {
     visionApiKey: settings?.aiOcrApiKey.trim() || DEFAULT_OCR_SPACE_KEY,
     visionEndpoint,
     visionModel,
-    textApiKey: (shouldReuseKey ? settings?.aiOcrApiKey : settings?.aiOcrTextApiKey)?.trim() ?? '',
+    textApiKey: settings?.aiOcrTextApiKey?.trim() ?? '',
     textEndpoint: settings?.aiOcrTextEndpoint.trim() || DEFAULT_TEXT_ENDPOINT,
     textModel: settings?.aiOcrTextModel.trim() || 'deepseek-v4-flash',
   };
+}
+
+async function callVisionRecognition(config: ReturnType<typeof normalizeAiOcrSettings>, imageDataUrl: string) {
+  if (isOcrSpaceEndpoint(config.visionEndpoint, config.visionModel)) {
+    return callOcrSpace({
+      endpoint: config.visionEndpoint,
+      apiKey: config.visionApiKey,
+      model: config.visionModel,
+      imageDataUrl,
+    });
+  }
+  if (isAzureVisionEndpoint(config.visionEndpoint, config.visionModel)) {
+    return callAzureVisionRead({
+      endpoint: config.visionEndpoint,
+      apiKey: config.visionApiKey,
+      imageDataUrl,
+    });
+  }
+  if (isMistralOcrEndpoint(config.visionEndpoint, config.visionModel)) {
+    return callMistralOcr({
+      endpoint: config.visionEndpoint,
+      apiKey: config.visionApiKey,
+      model: config.visionModel,
+      imageDataUrl,
+    });
+  }
+  if (isCloudflareRunEndpoint(config.visionEndpoint)) {
+    return callCloudflareVision({
+      endpoint: config.visionEndpoint,
+      apiKey: config.visionApiKey,
+      imageDataUrl,
+    });
+  }
+  if (isAnthropicEndpoint(config.visionEndpoint, config.visionModel)) {
+    return callAnthropicMessages({
+      endpoint: config.visionEndpoint,
+      apiKey: config.visionApiKey,
+      model: config.visionModel,
+      system: DEFAULT_VISION_PROMPT,
+      content: [
+        { type: 'image_url', image_url: { url: imageDataUrl } },
+        { type: 'text', text: '请识别这张拼豆图纸裁剪区域里的色号/颜色名和数量。' },
+      ],
+      maxTokens: 1600,
+    });
+  }
+  return callOpenAiCompatibleChat({
+    endpoint: config.visionEndpoint,
+    apiKey: config.visionApiKey,
+    model: config.visionModel,
+    messages: [
+      { role: 'system', content: DEFAULT_VISION_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '请识别这张拼豆图纸裁剪区域里的色号/颜色名和数量。' },
+          { type: 'image_url', image_url: { url: imageDataUrl } },
+        ],
+      },
+    ],
+    maxTokens: 1600,
+  });
 }
 
 async function callOcrSpace({
@@ -244,18 +307,148 @@ function getOcrSpaceEngine(model: string) {
   return '2';
 }
 
+function isAzureVisionEndpoint(endpoint: string, model: string) {
+  return endpoint.includes('/imageanalysis:analyze') || model.toLowerCase().startsWith('azure-vision-read');
+}
+
+function isMistralOcrEndpoint(endpoint: string, model: string) {
+  return endpoint.includes('/v1/ocr') || model.toLowerCase().startsWith('mistral-ocr');
+}
+
+function isCloudflareRunEndpoint(endpoint: string) {
+  return endpoint.includes('/ai/run/');
+}
+
+function isAnthropicEndpoint(endpoint: string, model: string) {
+  return endpoint.includes('api.anthropic.com') || model.toLowerCase().startsWith('claude-');
+}
+
+async function callAzureVisionRead({ endpoint, apiKey, imageDataUrl }: { endpoint: string; apiKey: string; imageDataUrl: string }) {
+  const url = withAzureReadQuery(endpoint);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': apiKey,
+      'Content-Type': getDataUrlMime(imageDataUrl),
+    },
+    body: await dataUrlToBlob(imageDataUrl),
+  });
+  const payload = (await response.json().catch(() => ({}))) as AzureImageAnalysisResponse;
+  if (!response.ok) {
+    throw new Error(payload.error?.message || payload.error?.code || `Azure AI Vision 返回 HTTP ${response.status}`);
+  }
+  const text = (payload.readResult?.blocks ?? [])
+    .flatMap((block) => block.lines ?? [])
+    .map((line) => line.text?.trim())
+    .filter(Boolean)
+    .join('\n');
+  if (!text) throw new Error('Azure AI Vision 没有返回可解析文本');
+  return text;
+}
+
+function withAzureReadQuery(endpoint: string) {
+  const [base, rawQuery = ''] = endpoint.split('?');
+  const params = new URLSearchParams(rawQuery);
+  if (!params.has('features')) params.set('features', 'read');
+  if (!params.has('api-version')) params.set('api-version', '2024-02-01');
+  return `${base}?${params.toString()}`;
+}
+
+async function callMistralOcr({
+  endpoint,
+  apiKey,
+  model,
+  imageDataUrl,
+}: {
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  imageDataUrl: string;
+}) {
+  const response = await fetch(endpoint || 'https://api.mistral.ai/v1/ocr', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      document: {
+        type: 'image_url',
+        image_url: imageDataUrl,
+      },
+      include_image_base64: false,
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as MistralOcrResponse;
+  if (!response.ok) {
+    throw new Error(payload.error?.message || `Mistral OCR 返回 HTTP ${response.status}`);
+  }
+  const text = [
+    payload.markdown,
+    payload.text,
+    ...(payload.pages ?? []).map((page) => page.markdown || page.text),
+  ]
+    .map((item) => item?.trim())
+    .filter(Boolean)
+    .join('\n');
+  if (!text) throw new Error('Mistral OCR 没有返回可解析文本');
+  return text;
+}
+
+async function callCloudflareVision({ endpoint, apiKey, imageDataUrl }: { endpoint: string; apiKey: string; imageDataUrl: string }) {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: DEFAULT_VISION_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请识别这张拼豆图纸裁剪区域里的色号/颜色名和数量。' },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+      temperature: 0,
+      max_tokens: 1600,
+      stream: false,
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as CloudflareRunResponse;
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.errors?.map((item) => item.message).filter(Boolean).join('；') || `Cloudflare Workers AI 返回 HTTP ${response.status}`);
+  }
+  const text = payload.result?.response?.trim() || payload.result?.text?.trim() || payload.response?.trim();
+  if (!text) throw new Error('Cloudflare Workers AI 没有返回可解析文本');
+  return text;
+}
+
 async function refineOcrTextWithAi(rawText: string, config: ReturnType<typeof normalizeAiOcrSettings>) {
   if (!config.textApiKey || !config.textEndpoint) return { status: 'skipped', items: [] } satisfies RefineOutcome;
-  const content = await callOpenAiCompatibleChat({
-    endpoint: config.textEndpoint,
-    apiKey: config.textApiKey,
-    model: config.textModel,
-    messages: [
-      { role: 'system', content: `${DEFAULT_TEXT_PROMPT}\n\nMARD 291 色表：${PALETTE_PROMPT}` },
-      { role: 'user', content: `OCR 原文：\n${rawText}` },
-    ],
-    maxTokens: 2200,
-  });
+  const content = isAnthropicEndpoint(config.textEndpoint, config.textModel)
+    ? await callAnthropicMessages({
+        endpoint: config.textEndpoint,
+        apiKey: config.textApiKey,
+        model: config.textModel,
+        system: `${DEFAULT_TEXT_PROMPT}\n\nMARD 291 色表：${PALETTE_PROMPT}`,
+        content: `OCR 原文：\n${rawText}`,
+        maxTokens: 2200,
+      })
+    : await callOpenAiCompatibleChat({
+        endpoint: config.textEndpoint,
+        apiKey: config.textApiKey,
+        model: config.textModel,
+        messages: [
+          { role: 'system', content: `${DEFAULT_TEXT_PROMPT}\n\nMARD 291 色表：${PALETTE_PROMPT}` },
+          { role: 'user', content: `OCR 原文：\n${rawText}` },
+        ],
+        maxTokens: 2200,
+      });
   const items = parseAiJsonItems(content);
   return { status: items.length ? 'ready' : 'empty', items } satisfies RefineOutcome;
 }
@@ -311,6 +504,69 @@ async function callOpenAiCompatibleChat({
   return content;
 }
 
+async function callAnthropicMessages({
+  endpoint,
+  apiKey,
+  model,
+  system,
+  content,
+  maxTokens,
+}: {
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  system: string;
+  content: OpenAiChatMessage['content'];
+  maxTokens: number;
+}) {
+  const response = await fetch(endpoint || 'https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      system,
+      messages: [
+        {
+          role: 'user',
+          content: toAnthropicContent(content),
+        },
+      ],
+      temperature: 0,
+      max_tokens: maxTokens,
+    }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as AnthropicResponse;
+  if (!response.ok) {
+    throw new Error(payload.error?.message || `Anthropic 返回 HTTP ${response.status}`);
+  }
+  const text = (payload.content ?? [])
+    .map((item) => item.text?.trim())
+    .filter(Boolean)
+    .join('\n');
+  if (!text) throw new Error('Anthropic 没有返回可解析文本');
+  return text;
+}
+
+function toAnthropicContent(content: OpenAiChatMessage['content']) {
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  return content.map((part) => {
+    if (part.type === 'text') return { type: 'text', text: part.text };
+    const dataUrl = part.image_url.url;
+    return {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: getDataUrlMime(dataUrl),
+        data: getDataUrlBase64(dataUrl),
+      },
+    };
+  });
+}
+
 function parseAiJsonItems(content: string) {
   const jsonText = extractJsonBlock(content);
   if (!jsonText) return [];
@@ -357,6 +613,18 @@ async function imageUriToDataUrl(uri: string) {
   const base64 = await file.base64();
   const mime = guessImageMime(uri);
   return `data:${mime};base64,${base64}`;
+}
+
+function getDataUrlMime(dataUrl: string) {
+  return dataUrl.match(/^data:([^;]+);base64,/)?.[1] || 'image/png';
+}
+
+function getDataUrlBase64(dataUrl: string) {
+  return dataUrl.split(',', 2)[1] || dataUrl;
+}
+
+async function dataUrlToBlob(dataUrl: string) {
+  return fetch(dataUrl).then((response) => response.blob());
 }
 
 function readBlobAsDataUrl(blob: Blob) {
