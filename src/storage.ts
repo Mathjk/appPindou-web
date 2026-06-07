@@ -18,7 +18,26 @@ export async function loadAppData(): Promise<AppData> {
 }
 
 export async function saveAppData(data: AppData) {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (error) {
+    // If storage is full (e.g. localStorage quota on web), retry without the action history,
+    // which is the only unbounded, non-essential part of the payload. Inventory, projects,
+    // and purchase lists are preserved.
+    if (isQuotaError(error)) {
+      const trimmed: AppData = { ...data, actionHistory: [] };
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+      return;
+    }
+    throw error;
+  }
+}
+
+function isQuotaError(error: unknown) {
+  if (!error) return false;
+  const name = (error as { name?: string }).name ?? '';
+  const message = (error as { message?: string }).message ?? '';
+  return /quota|exceeded|storage/i.test(`${name} ${message}`);
 }
 
 export function exportAppData(data: AppData) {
@@ -129,9 +148,16 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
     settings: { ...empty.settings, ...snapshot.settings },
     inventory: normalizeInventory(snapshot.inventory),
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
-    projects: Array.isArray(snapshot.projects) ? snapshot.projects : [],
+    // Drop any image data URLs carried by legacy history snapshots so previously bloated
+    // localStorage shrinks on next save (see stripProjectImages in domain.ts).
+    projects: Array.isArray(snapshot.projects) ? snapshot.projects.map(stripSnapshotProjectImages) : [],
     purchaseLists: Array.isArray(snapshot.purchaseLists) && snapshot.purchaseLists.length ? snapshot.purchaseLists : [createPurchaseList('默认采购表')],
   };
+}
+
+function stripSnapshotProjectImages<T extends Record<string, unknown>>(project: T): T {
+  const { imageUri, originalImageUri, croppedImageUri, ...rest } = project as Record<string, unknown>;
+  return rest as T;
 }
 
 function normalizeInventory(inventory: AppData['inventory'] | Array<InventoryEntry & { code: string }> | undefined): AppData['inventory'] {

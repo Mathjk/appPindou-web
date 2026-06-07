@@ -73,6 +73,31 @@ historyData = recordActionHistory(historyData, createEmptyData(), 'reset');
 historyData = undoSingleHistoryEntry(historyData, historyData.actionHistory[0].id);
 assert(getStock(historyData, 'G2') === getStock(beforeReset, 'G2'), 'reset should be recoverable from history');
 
+let imageHistoryData = createEmptyData();
+const imageProject = createProject('图片历史测试');
+imageHistoryData = { ...imageHistoryData, projects: [imageProject] };
+const bigImage = `data:image/png;base64,${'A'.repeat(500000)}`;
+const afterOcrImage = {
+  ...imageHistoryData,
+  projects: [
+    {
+      ...imageProject,
+      imageUri: bigImage,
+      originalImageUri: bigImage,
+      croppedImageUri: bigImage,
+      items: [{ id: 'image_item_1', code: 'A1', quantity: 100, note: 'OCR 识别' }],
+    },
+  ],
+};
+imageHistoryData = recordActionHistory(imageHistoryData, afterOcrImage, '裁剪并 OCR');
+const imageHistoryEntry = imageHistoryData.actionHistory[0];
+assert(imageHistoryData.projects[0].imageUri === bigImage, 'live project state should keep OCR image data');
+assert(imageHistoryEntry.after.projects[0].imageUri === undefined, 'history snapshot should strip imageUri');
+assert(imageHistoryEntry.after.projects[0].croppedImageUri === undefined, 'history snapshot should strip croppedImageUri');
+assert(JSON.stringify(imageHistoryData.actionHistory).length < 10000, 'history snapshots should not store large image data URLs');
+const imageHistoryRollback = rollbackToHistoryEntry(imageHistoryData, imageHistoryEntry.id);
+assert(imageHistoryRollback.projects[0]?.imageUri === bigImage, 'rollback should re-attach current project image data');
+
 const ocrItems = parsePatternOcrText('g2×144\nA09 32颗\nZG1：５');
 assert(ocrItems.find((item) => item.code === 'G2')?.quantity === 144, 'OCR parser should parse lowercase code with multiplication sign');
 assert(ocrItems.find((item) => item.code === 'A9')?.quantity === 32, 'OCR parser should normalize leading zero codes');

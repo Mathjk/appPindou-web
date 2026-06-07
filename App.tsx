@@ -1695,8 +1695,8 @@ function CropModal({
   const [cropRect, setCropRect] = useState<DisplayCropRect>({ x: 0, y: 0, width: 1, height: 1 });
   const cropRef = useRef(cropRect);
   const panStartRef = useRef(cropRect);
-  const maxCanvasWidth = Math.min(Math.max(viewport.width - 32, 260), 398);
-  const maxCanvasHeight = Math.min(Math.max(viewport.height * 0.43, 220), 420);
+  const maxCanvasWidth = Math.min(Math.max(viewport.width - 24, 260), 720);
+  const maxCanvasHeight = Math.min(Math.max(viewport.height * 0.62, 280), 760);
 
   useEffect(() => {
     cropRef.current = cropRect;
@@ -1928,7 +1928,7 @@ function CropModal({
 }
 
 function clampDisplayCropRect(rect: DisplayCropRect, maxWidth: number, maxHeight: number) {
-  const minSize = 48;
+  const minSize = 8;
   let width = Math.min(Math.max(rect.width, minSize), maxWidth);
   let height = Math.min(Math.max(rect.height, minSize), maxHeight);
   const x = Math.min(Math.max(0, rect.x), Math.max(0, maxWidth - width));
@@ -2575,7 +2575,7 @@ const styles = StyleSheet.create({
   },
   cropModalPanel: {
     width: '100%',
-    maxWidth: 430,
+    maxWidth: 760,
     flex: 1,
     borderRadius: 8,
     backgroundColor: colors.bg,

@@ -61,10 +61,20 @@ export function snapshotAppData(data: AppData | AppDataSnapshot): AppDataSnapsho
       settings: data.settings,
       inventory: data.inventory,
       stockLogs: data.stockLogs,
-      projects: data.projects,
+      projects: data.projects.map(stripProjectImages),
       purchaseLists: data.purchaseLists,
     }),
   ) as AppDataSnapshot;
+}
+
+// History snapshots must not carry image base64 data URLs. Each project holds up to three
+// base64 images (original/cropped/OCR), and storing before+after copies across many history
+// entries quickly overflows the ~5MB localStorage quota on web, which surfaces as
+// "本地保存失败". Images are derived artifacts that undo/rollback never need to restore,
+// so we drop them from snapshots.
+function stripProjectImages(project: PatternProject): PatternProject {
+  const { imageUri, originalImageUri, croppedImageUri, ...rest } = project;
+  return rest;
 }
 
 export function recordActionHistory(before: AppData, after: AppData, label = '数据变更'): AppData {
@@ -80,8 +90,11 @@ export function recordActionHistory(before: AppData, after: AppData, label = '�
     after: afterSnapshot,
   };
 
+  // Return the full `after` state (which still carries project image data URLs) so OCR/crop
+  // results are preserved in the live state; only the history entry uses the image-stripped
+  // snapshots to keep storage small.
   return {
-    ...afterSnapshot,
+    ...after,
     actionHistory: [entry, ...(before.actionHistory ?? [])].slice(0, HISTORY_LIMIT),
   };
 }
@@ -107,8 +120,22 @@ export function rollbackToHistoryEntry(data: AppData, historyId: string): AppDat
   const entry = data.actionHistory.find((item) => item.id === historyId);
   if (!entry) return data;
   const now = new Date().toISOString();
+  const restored = snapshotAppData(entry.before);
+  // Snapshots no longer store image data URLs, so re-attach the current image fields to any
+  // project that still exists, keeping uploaded/cropped images visible after a rollback.
+  const currentImagesById = new Map(data.projects.map((project) => [project.id, project]));
   return {
-    ...snapshotAppData(entry.before),
+    ...restored,
+    projects: restored.projects.map((project) => {
+      const current = currentImagesById.get(project.id);
+      if (!current) return project;
+      return {
+        ...project,
+        imageUri: current.imageUri,
+        originalImageUri: current.originalImageUri,
+        croppedImageUri: current.croppedImageUri,
+      };
+    }),
     actionHistory: data.actionHistory.map((item) => (item.createdAt >= entry.createdAt ? { ...item, undoneAt: item.undoneAt ?? now } : item)),
   };
 }
