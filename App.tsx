@@ -182,21 +182,36 @@ export default function App() {
   }
 
   const stats = getInventoryStats(data);
+  const compactChrome = viewport.height < 620;
 
   return (
     <SafeAreaView style={[styles.shell, Platform.OS === 'web' && styles.webShell, Platform.OS === 'web' && { height: viewport.height }]}>
       <StatusBar style="dark" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.shell}>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.brand}>MARD 豆仓</Text>
-            <Text style={styles.headerSub}>
-              {stats.stocked}/{stats.totalColors} 色有库存 · 共 {stats.totalBeads} 颗
-            </Text>
+        <View style={[styles.header, compactChrome && styles.headerCompact]}>
+          <View style={styles.headerTop}>
+            <View style={styles.headerTitleBlock}>
+              <Text style={styles.brand}>MARD 豆仓</Text>
+              <Text style={styles.headerSub}>291 色库存台账</Text>
+            </View>
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{stats.low} 低库存</Text>
+            </View>
           </View>
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{stats.low} 低库存</Text>
-          </View>
+          {compactChrome ? null : <View style={styles.headerMetrics}>
+            <View style={styles.headerMetric}>
+              <Text style={styles.headerMetricValue}>{stats.stocked}</Text>
+              <Text style={styles.headerMetricLabel}>有库存</Text>
+            </View>
+            <View style={styles.headerMetric}>
+              <Text style={styles.headerMetricValue}>{stats.totalColors}</Text>
+              <Text style={styles.headerMetricLabel}>总色数</Text>
+            </View>
+            <View style={styles.headerMetricWide}>
+              <Text style={styles.headerMetricValue}>{stats.totalBeads}</Text>
+              <Text style={styles.headerMetricLabel}>总颗数</Text>
+            </View>
+          </View>}
         </View>
 
         {notice ? (
@@ -1665,7 +1680,7 @@ function LabeledInput({
 
 function ActionButton({ label, onPress, tone = 'primary' }: { label: string; onPress: () => void; tone?: 'primary' | 'amber' | 'danger' | 'neutral' }) {
   return (
-    <Pressable style={[styles.actionButton, styles[`button_${tone}`]]} onPress={onPress}>
+    <Pressable style={({ pressed }) => [styles.actionButton, styles[`button_${tone}`], pressed && styles.actionButtonPressed]} onPress={onPress}>
       <Text style={[styles.actionButtonText, tone === 'neutral' && styles.neutralButtonText]}>{label}</Text>
     </Pressable>
   );
@@ -1701,14 +1716,24 @@ function RoundActionButton({
   onPress: () => void;
 }) {
   return (
-    <Pressable accessibilityLabel={accessibilityLabel} style={[styles.roundAction, tone === 'plus' ? styles.roundActionPlus : styles.roundActionMinus]} onPress={onPress}>
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [styles.roundAction, tone === 'plus' ? styles.roundActionPlus : styles.roundActionMinus, pressed && styles.roundActionPressed]}
+      onPress={onPress}
+    >
       <Text style={styles.roundActionText}>{label}</Text>
     </Pressable>
   );
 }
 
 function ColorSwatch({ color }: { color: string }) {
-  return <View style={[styles.swatch, { backgroundColor: color }]} />;
+  return (
+    <View style={styles.swatchFrame}>
+      <View style={[styles.swatch, { backgroundColor: color }]}>
+        <View style={styles.swatchHighlight} />
+      </View>
+    </View>
+  );
 }
 
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'danger' | 'ok' }) {
@@ -1785,11 +1810,12 @@ function CropModal({
   }, [imageSize.height, imageSize.width, maxCanvasHeight, maxCanvasWidth]);
 
   const resetCropRect = () => {
+    const inset = Math.max(12, Math.min(displaySize.width, displaySize.height) * 0.05);
     setCropRect({
-      x: 0,
-      y: 0,
-      width: Math.max(48, displaySize.width),
-      height: Math.max(48, displaySize.height),
+      x: inset,
+      y: inset,
+      width: Math.max(48, displaySize.width - inset * 2),
+      height: Math.max(48, displaySize.height - inset * 2),
     });
   };
 
@@ -2015,16 +2041,48 @@ function CropAdjustButton({ label, onPress }: { label: string; onPress: () => vo
 }
 
 const colors = {
-  ink: '#20201E',
-  muted: '#6E6A60',
-  line: '#E4DED0',
-  bg: '#F7F2E8',
-  panel: '#FFFDF8',
-  green: '#317A66',
-  greenDark: '#245B4C',
-  amber: '#A06120',
-  red: '#B94A3E',
-  blue: '#366A8D',
+  ink: '#171A21',
+  inkSoft: '#303847',
+  muted: '#687080',
+  faint: '#9AA2AF',
+  line: '#DDE2EA',
+  lineStrong: '#B9C1CE',
+  bg: '#EEF2F6',
+  bgAlt: '#F6F8FB',
+  panel: '#FFFFFF',
+  panelTint: '#F9FBFE',
+  panelDark: '#121620',
+  panelDark2: '#1C2230',
+  green: '#0F7A62',
+  greenDark: '#075746',
+  mint: '#BDEBD9',
+  amber: '#B46A16',
+  amberSoft: '#FFF1D6',
+  red: '#C0473D',
+  redSoft: '#FFE5E1',
+  blue: '#2D66C3',
+  blueSoft: '#E6F0FF',
+  coral: '#E5715F',
+  violet: '#6B6FD6',
+  white: '#FFFFFF',
+};
+
+const fonts = {
+  display: Platform.select({
+    ios: 'Avenir Next',
+    android: 'sans-serif-medium',
+    default: 'Avenir Next, ui-sans-serif, system-ui, sans-serif',
+  }),
+  text: Platform.select({
+    ios: 'Avenir Next',
+    android: 'sans-serif',
+    default: 'Avenir Next, ui-sans-serif, system-ui, sans-serif',
+  }),
+  mono: Platform.select({
+    ios: 'Menlo',
+    android: 'monospace',
+    default: 'Menlo, ui-monospace, SFMono-Regular, monospace',
+  }),
 };
 
 const webCropMovePadStyle = {
@@ -2045,7 +2103,7 @@ const webCropOverlayStyle = {
   position: 'fixed',
   inset: 0,
   zIndex: 2147483647,
-  backgroundColor: colors.bg,
+  backgroundColor: colors.bgAlt,
   display: 'flex',
   flexDirection: 'column',
   justifyContent: 'flex-start',
@@ -2057,7 +2115,7 @@ const webCropOverlayStyle = {
 
 const webCropMoveHintStyle = {
   color: '#FFFFFF',
-  backgroundColor: 'rgba(0, 0, 0, 0.38)',
+  backgroundColor: 'rgba(18, 22, 32, 0.76)',
   padding: '4px 8px',
   borderRadius: 8,
   fontWeight: 800,
@@ -2070,7 +2128,8 @@ const webCropHandleStyle = {
   height: 44,
   borderRadius: 22,
   backgroundColor: '#FFFFFF',
-  border: `2px solid ${colors.green}`,
+  border: `2px solid ${colors.blue}`,
+  boxShadow: '0 10px 26px rgba(23, 26, 33, 0.22)',
   zIndex: 5,
   cursor: 'nwse-resize',
   touchAction: 'none',
@@ -2097,7 +2156,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: colors.line,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.bg,
   },
   loading: {
     flex: 1,
@@ -2106,42 +2166,102 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   header: {
-    paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 12,
+    margin: 10,
+    padding: 14,
+    borderRadius: 8,
+    backgroundColor: colors.panelDark,
+    borderWidth: 1,
+    borderColor: '#2A3142',
+    boxShadow: '0 14px 30px rgba(18, 22, 32, 0.20)',
+  },
+  headerCompact: {
+    marginBottom: 6,
+    paddingVertical: 10,
+  },
+  headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  headerTitleBlock: {
+    flex: 1,
   },
   brand: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: colors.ink,
+    fontFamily: fonts.display,
+    fontSize: 25,
+    fontWeight: '900',
+    color: colors.white,
     letterSpacing: 0,
   },
   headerSub: {
-    color: colors.muted,
-    marginTop: 3,
+    color: '#B8C3D6',
+    marginTop: 4,
+    fontFamily: fonts.text,
+    fontSize: 13,
+    fontWeight: '700',
   },
   badge: {
-    backgroundColor: '#E7F0DD',
-    borderColor: '#BED1A8',
+    backgroundColor: '#223127',
+    borderColor: '#3D765C',
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
     borderRadius: 8,
   },
   badgeText: {
-    color: colors.greenDark,
-    fontWeight: '700',
+    color: '#A8F0D3',
+    fontWeight: '900',
+    fontSize: 12,
+  },
+  headerMetrics: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 14,
+  },
+  headerMetric: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 8,
+    backgroundColor: colors.panelDark2,
+    borderWidth: 1,
+    borderColor: '#30384B',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    justifyContent: 'center',
+  },
+  headerMetricWide: {
+    flex: 1.35,
+    minHeight: 56,
+    borderRadius: 8,
+    backgroundColor: '#22283A',
+    borderWidth: 1,
+    borderColor: '#3C465F',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    justifyContent: 'center',
+  },
+  headerMetricValue: {
+    color: colors.white,
+    fontFamily: fonts.display,
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  headerMetricLabel: {
+    color: '#A9B4C7',
+    fontFamily: fonts.text,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 2,
   },
   notice: {
-    marginHorizontal: 18,
+    marginHorizontal: 10,
     marginBottom: 8,
-    padding: 10,
-    backgroundColor: '#FFF0CF',
+    padding: 9,
+    backgroundColor: colors.amberSoft,
     borderWidth: 1,
-    borderColor: '#E9C169',
+    borderColor: '#E7B24D',
     borderRadius: 8,
   },
   noticeInline: {
@@ -2151,9 +2271,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   noticeText: {
-    color: '#63420D',
+    color: '#74460D',
     flexShrink: 1,
     lineHeight: 20,
+    fontWeight: '700',
   },
   noticeActions: {
     flexDirection: 'row',
@@ -2164,7 +2285,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: '#F7DFA3',
+    backgroundColor: '#F2CF82',
   },
   noticeButtonText: {
     color: '#4D3309',
@@ -2172,7 +2293,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     zIndex: 1,
   },
   panel: {
@@ -2180,8 +2301,9 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     borderWidth: 1,
     borderRadius: 8,
-    padding: 14,
-    marginBottom: 12,
+    padding: 13,
+    marginBottom: 10,
+    boxShadow: '0 8px 20px rgba(41, 50, 65, 0.06)',
   },
   stickyPanel: {
     marginBottom: 10,
@@ -2204,20 +2326,23 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   panelTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    fontFamily: fonts.display,
+    fontSize: 17,
+    fontWeight: '900',
     color: colors.ink,
     letterSpacing: 0,
   },
   sectionTitle: {
     fontSize: 15,
-    fontWeight: '800',
+    fontFamily: fonts.text,
+    fontWeight: '900',
     color: colors.ink,
     marginBottom: 8,
   },
   muted: {
     color: colors.muted,
     lineHeight: 19,
+    fontFamily: fonts.text,
   },
   helpText: {
     color: colors.muted,
@@ -2235,17 +2360,37 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   bigCode: {
-    fontSize: 23,
+    fontFamily: fonts.mono,
+    fontSize: 24,
     fontWeight: '900',
     color: colors.ink,
     letterSpacing: 0,
   },
-  swatch: {
-    width: 32,
-    height: 32,
-    borderRadius: 7,
+  swatchFrame: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#F3F6FA',
+    alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#9B9587',
+    borderColor: colors.lineStrong,
+  },
+  swatch: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: 'rgba(23, 26, 33, 0.2)',
+    overflow: 'hidden',
+  },
+  swatchHighlight: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginLeft: 5,
+    marginTop: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.48)',
   },
   inputGrid: {
     flexDirection: 'row',
@@ -2285,6 +2430,10 @@ const styles = StyleSheet.create({
   roundActionMinus: {
     backgroundColor: colors.red,
   },
+  roundActionPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.98 }],
+  },
   roundActionText: {
     color: '#FFFFFF',
     fontSize: 22,
@@ -2296,8 +2445,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
-    backgroundColor: '#EFE8DA',
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.bgAlt,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2312,7 +2461,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   packHint: {
-    color: colors.greenDark,
+    color: colors.blue,
     fontSize: 12,
     fontWeight: '800',
     marginBottom: 5,
@@ -2327,20 +2476,21 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   label: {
-    color: colors.muted,
+    color: colors.inkSoft,
     fontSize: 12,
     marginBottom: 5,
-    fontWeight: '700',
+    fontWeight: '900',
   },
   input: {
     minHeight: 38,
     borderWidth: 1,
-    borderColor: '#D7CFBE',
-    backgroundColor: '#FFFEFB',
+    borderColor: colors.line,
+    backgroundColor: colors.panelTint,
     borderRadius: 8,
     paddingHorizontal: 10,
     color: colors.ink,
     fontSize: 15,
+    fontFamily: fonts.text,
   },
   qtyInput: {
     width: 84,
@@ -2369,42 +2519,55 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   actionButtonText: {
     color: '#FFFFFF',
-    fontWeight: '800',
+    fontFamily: fonts.text,
+    fontWeight: '900',
+  },
+  actionButtonPressed: {
+    opacity: 0.84,
+    transform: [{ translateY: 1 }],
   },
   neutralButtonText: {
     color: colors.ink,
   },
   button_primary: {
-    backgroundColor: colors.green,
+    backgroundColor: colors.panelDark,
+    borderColor: colors.panelDark,
   },
   button_amber: {
     backgroundColor: colors.amber,
+    borderColor: colors.amber,
   },
   button_danger: {
     backgroundColor: colors.red,
+    borderColor: colors.red,
   },
   button_neutral: {
-    backgroundColor: '#EFE8DA',
+    backgroundColor: colors.white,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
+    borderColor: colors.lineStrong,
   },
   toolbar: {
     marginBottom: 8,
   },
   frozenFilters: {
     marginBottom: 8,
+    backgroundColor: colors.bg,
   },
   searchInput: {
-    minHeight: 44,
+    minHeight: 42,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: '#FFFDF8',
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
     borderRadius: 8,
     paddingHorizontal: 12,
     fontSize: 15,
+    fontFamily: fonts.text,
+    color: colors.ink,
   },
   numberPad: {
     flexDirection: 'row',
@@ -2417,9 +2580,9 @@ const styles = StyleSheet.create({
     width: '23.5%',
     minHeight: 34,
     borderRadius: 8,
-    backgroundColor: '#EFE8DA',
+    backgroundColor: colors.white,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
+    borderColor: colors.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2448,8 +2611,8 @@ const styles = StyleSheet.create({
     minHeight: 38,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
-    backgroundColor: '#FFFEFB',
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
@@ -2472,61 +2635,65 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     borderRadius: 8,
     overflow: 'hidden',
-    backgroundColor: '#FFFEFB',
+    backgroundColor: colors.white,
   },
   purchaseDropdownItem: {
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#EFE6D5',
+    borderBottomColor: colors.line,
   },
   purchaseDropdownItemActive: {
-    backgroundColor: '#F1FAF1',
+    backgroundColor: colors.blueSoft,
   },
   purchaseDropdownText: {
     color: colors.ink,
     fontWeight: '700',
   },
   purchaseDropdownTextActive: {
-    color: colors.greenDark,
+    color: colors.blue,
     fontWeight: '900',
   },
   seriesChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#ECE3D2',
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.line,
     borderRadius: 8,
     marginRight: 8,
   },
   seriesChipActive: {
-    backgroundColor: colors.ink,
+    backgroundColor: colors.panelDark,
+    borderColor: colors.panelDark,
   },
   seriesText: {
     color: colors.ink,
-    fontWeight: '700',
+    fontWeight: '900',
   },
   seriesTextActive: {
     color: '#FFFFFF',
   },
   list: {
-    gap: 8,
+    gap: 7,
     paddingBottom: 24,
   },
   colorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    padding: 11,
+    gap: 10,
+    padding: 10,
     backgroundColor: colors.panel,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.line,
   },
   colorRowActive: {
-    borderColor: colors.green,
-    backgroundColor: '#F1FAF1',
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft,
   },
   codeText: {
+    fontFamily: fonts.mono,
     fontSize: 16,
     color: colors.ink,
     fontWeight: '800',
@@ -2540,6 +2707,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontWeight: '900',
     fontSize: 18,
+    fontFamily: fonts.mono,
   },
   miniLabel: {
     color: colors.muted,
@@ -2571,13 +2739,16 @@ const styles = StyleSheet.create({
   projectChip: {
     paddingHorizontal: 12,
     paddingVertical: 9,
-    backgroundColor: '#ECE3D2',
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.line,
     borderRadius: 8,
     marginRight: 8,
     maxWidth: 180,
   },
   projectChipActive: {
-    backgroundColor: colors.green,
+    backgroundColor: colors.panelDark,
+    borderColor: colors.panelDark,
   },
   projectChipText: {
     color: colors.ink,
@@ -2594,21 +2765,23 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 190,
     borderRadius: 8,
-    backgroundColor: '#EEE7DA',
+    backgroundColor: colors.bgAlt,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   deductPreview: {
     marginTop: 12,
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E1C46F',
-    backgroundColor: '#FFF8E6',
+    borderColor: '#E7B24D',
+    backgroundColor: colors.amberSoft,
     gap: 10,
   },
   deductRows: {
     borderTopWidth: 1,
-    borderTopColor: '#E8D9B1',
+    borderTopColor: '#E8C985',
   },
   deductRow: {
     flexDirection: 'row',
@@ -2616,11 +2789,11 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: '#E8D9B1',
+    borderBottomColor: '#E8C985',
   },
   cropModalBackdrop: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: colors.bgAlt,
     alignItems: 'center',
     justifyContent: 'flex-start',
     padding: 12,
@@ -2630,9 +2803,11 @@ const styles = StyleSheet.create({
     maxWidth: 760,
     flex: 1,
     borderRadius: 8,
-    backgroundColor: colors.bg,
-    padding: 6,
+    backgroundColor: colors.panel,
+    padding: 10,
     gap: 10,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   cropTitleRow: {
     flexDirection: 'row',
@@ -2642,11 +2817,11 @@ const styles = StyleSheet.create({
   },
   cropCanvas: {
     alignSelf: 'center',
-    backgroundColor: '#211F1C',
+    backgroundColor: colors.panelDark,
     overflow: 'hidden',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: colors.lineStrong,
   },
   cropImage: {
     position: 'absolute',
@@ -2657,7 +2832,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     borderWidth: 2,
     borderColor: '#FFFFFF',
-    backgroundColor: 'rgba(49, 122, 102, 0.16)',
+    backgroundColor: 'rgba(45, 102, 195, 0.16)',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
@@ -2670,7 +2845,7 @@ const styles = StyleSheet.create({
   },
   cropMoveHint: {
     color: '#FFFFFF',
-    backgroundColor: 'rgba(0, 0, 0, 0.38)',
+    backgroundColor: 'rgba(18, 22, 32, 0.76)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
@@ -2684,7 +2859,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
-    borderColor: colors.green,
+    borderColor: colors.blue,
     zIndex: 5,
   },
   cropHandleTopLeft: {
@@ -2715,8 +2890,8 @@ const styles = StyleSheet.create({
     minHeight: 38,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
-    backgroundColor: '#EFE8DA',
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 6,
@@ -2734,7 +2909,7 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: colors.line,
-    marginVertical: 14,
+    marginVertical: 12,
   },
   itemRow: {
     flexDirection: 'row',
@@ -2747,7 +2922,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
     padding: 10,
     borderRadius: 8,
-    backgroundColor: '#F4ECDC',
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   requirementCompare: {
     marginTop: 12,
@@ -2758,7 +2935,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: '#EFE6D5',
+    borderBottomColor: colors.line,
   },
   checkRow: {
     flexDirection: 'row',
@@ -2766,7 +2943,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: '#EFE6D5',
+    borderBottomColor: colors.line,
   },
   disabledBlock: {
     opacity: 0.54,
@@ -2776,14 +2953,14 @@ const styles = StyleSheet.create({
     height: 26,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#C9BDA8',
+    borderColor: colors.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFEFB',
+    backgroundColor: colors.white,
   },
   checkboxActive: {
-    backgroundColor: colors.green,
-    borderColor: colors.green,
+    backgroundColor: colors.blue,
+    borderColor: colors.blue,
   },
   checkboxText: {
     color: '#FFFFFF',
@@ -2798,27 +2975,31 @@ const styles = StyleSheet.create({
   statCard: {
     flex: 1,
     minWidth: 96,
-    backgroundColor: colors.panel,
+    backgroundColor: colors.panelTint,
     borderColor: colors.line,
     borderWidth: 1,
     borderRadius: 8,
-    padding: 12,
+    padding: 11,
   },
   statValue: {
-    fontSize: 24,
+    fontFamily: fonts.mono,
+    fontSize: 23,
     color: colors.ink,
     fontWeight: '900',
     marginTop: 5,
   },
   purchaseBox: {
-    backgroundColor: '#25231F',
+    backgroundColor: colors.panelDark,
     borderRadius: 8,
     padding: 14,
     marginTop: 12,
     minHeight: 110,
+    borderWidth: 1,
+    borderColor: '#30384B',
   },
   purchaseText: {
-    color: '#F8F1DF',
+    color: '#F4F7FB',
+    fontFamily: fonts.mono,
     fontSize: 18,
     lineHeight: 28,
     fontWeight: '800',
@@ -2826,6 +3007,10 @@ const styles = StyleSheet.create({
   empty: {
     padding: 24,
     alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: colors.panelTint,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   emptyTitle: {
     color: colors.ink,
@@ -2839,9 +3024,9 @@ const styles = StyleSheet.create({
     marginBottom: 30,
   },
   resetButtonReady: {
-    backgroundColor: '#FFF0CF',
+    backgroundColor: colors.amberSoft,
     borderWidth: 1,
-    borderColor: '#E9C169',
+    borderColor: '#E7B24D',
     borderRadius: 8,
   },
   historyRow: {
@@ -2850,7 +3035,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#EFE6D5',
+    borderBottomColor: colors.line,
   },
   historyActions: {
     flexDirection: 'row',
@@ -2860,9 +3045,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 7,
     borderRadius: 8,
-    backgroundColor: '#EFE8DA',
+    backgroundColor: colors.white,
     borderWidth: 1,
-    borderColor: '#D4C8B2',
+    borderColor: colors.lineStrong,
   },
   smallActionDisabled: {
     opacity: 0.45,
@@ -2878,11 +3063,13 @@ const styles = StyleSheet.create({
   },
   tabbar: {
     flexDirection: 'row',
-    gap: 6,
-    padding: 10,
+    gap: 7,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 10,
     borderTopWidth: 1,
     borderTopColor: colors.line,
-    backgroundColor: '#FFFDF8',
+    backgroundColor: colors.white,
     zIndex: 0,
   },
   tab: {
@@ -2891,13 +3078,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   tabActive: {
-    backgroundColor: colors.ink,
+    backgroundColor: colors.panelDark,
+    borderColor: colors.panelDark,
   },
   tabText: {
     color: colors.muted,
     fontWeight: '800',
+    fontFamily: fonts.text,
   },
   tabTextActive: {
     color: '#FFFFFF',
