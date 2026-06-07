@@ -18,19 +18,35 @@ export async function loadAppData(): Promise<AppData> {
 }
 
 export async function saveAppData(data: AppData) {
+  const persistable = prepareDataForStorage(data);
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   } catch (error) {
     // If storage is full (e.g. localStorage quota on web), retry without the action history,
     // which is the only unbounded, non-essential part of the payload. Inventory, projects,
     // and purchase lists are preserved.
     if (isQuotaError(error)) {
-      const trimmed: AppData = { ...data, actionHistory: [] };
+      const trimmed: AppData = { ...persistable, actionHistory: [] };
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
       return;
     }
     throw error;
   }
+}
+
+function prepareDataForStorage(data: AppData): AppData {
+  return {
+    ...data,
+    // Project image data URLs can exceed localStorage quota on mobile browsers. The live
+    // React state keeps them for preview/re-crop during the current session; persistent
+    // storage keeps the OCR result, editable bead counts, inventory, and purchase data.
+    projects: data.projects.map(stripProjectImageFields),
+    actionHistory: data.actionHistory.map((entry) => ({
+      ...entry,
+      before: normalizeSnapshot(entry.before),
+      after: normalizeSnapshot(entry.after),
+    })),
+  };
 }
 
 function isQuotaError(error: unknown) {
@@ -150,12 +166,12 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
     // Drop any image data URLs carried by legacy history snapshots so previously bloated
     // localStorage shrinks on next save (see stripProjectImages in domain.ts).
-    projects: Array.isArray(snapshot.projects) ? snapshot.projects.map(stripSnapshotProjectImages) : [],
+    projects: Array.isArray(snapshot.projects) ? snapshot.projects.map(stripProjectImageFields) : [],
     purchaseLists: Array.isArray(snapshot.purchaseLists) && snapshot.purchaseLists.length ? snapshot.purchaseLists : [createPurchaseList('默认采购表')],
   };
 }
 
-function stripSnapshotProjectImages<T extends Record<string, unknown>>(project: T): T {
+function stripProjectImageFields<T extends Record<string, unknown>>(project: T): T {
   const { imageUri, originalImageUri, croppedImageUri, ...rest } = project as Record<string, unknown>;
   return rest as T;
 }
