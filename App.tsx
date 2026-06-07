@@ -1170,6 +1170,7 @@ function SettingsScreen({
   const [aiOcrUseSameKey, setAiOcrUseSameKey] = useState(data.settings.aiOcrUseSameKey);
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
+  const canReuseAiOcrKey = !aiOcrEndpoint.trim().toLowerCase().includes('ocr.space') && !aiOcrModel.trim().toLowerCase().startsWith('ocr.space');
 
   useEffect(() => {
     if (resetCountdown <= 0) return;
@@ -1212,6 +1213,7 @@ function SettingsScreen({
   };
 
   const saveAiOcrSettings = () => {
+    const nextUseSameKey = canReuseAiOcrKey && aiOcrUseSameKey;
     updateData(
       (current) => ({
         ...current,
@@ -1220,10 +1222,10 @@ function SettingsScreen({
           aiOcrApiKey: aiOcrApiKey.trim(),
           aiOcrEndpoint: aiOcrEndpoint.trim() || 'https://api.ocr.space/parse/image',
           aiOcrModel: aiOcrModel.trim() || 'ocr.space-engine2',
-          aiOcrTextApiKey: aiOcrUseSameKey ? '' : aiOcrTextApiKey.trim(),
+          aiOcrTextApiKey: nextUseSameKey ? '' : aiOcrTextApiKey.trim(),
           aiOcrTextEndpoint: aiOcrTextEndpoint.trim() || 'https://api.deepseek.com/chat/completions',
           aiOcrTextModel: aiOcrTextModel.trim() || 'deepseek-v4-flash',
-          aiOcrUseSameKey,
+          aiOcrUseSameKey: nextUseSameKey,
         },
       }),
       '修改 OCR 接口设置',
@@ -1306,13 +1308,19 @@ function SettingsScreen({
           autoCapitalize="none"
         />
         <LabeledInput label="OCR 引擎/模型" value={aiOcrModel} onChangeText={setAiOcrModel} placeholder="ocr.space-engine2" autoCapitalize="none" />
-        <Pressable style={styles.checkRow} onPress={() => setAiOcrUseSameKey((current) => !current)}>
+        <Pressable
+          disabled={!canReuseAiOcrKey}
+          style={[styles.checkRow, !canReuseAiOcrKey && styles.disabledBlock]}
+          onPress={() => setAiOcrUseSameKey((current) => !current)}
+        >
           <View style={[styles.checkbox, aiOcrUseSameKey && styles.checkboxActive]}>
             <Text style={styles.checkboxText}>{aiOcrUseSameKey ? '✓' : ''}</Text>
           </View>
           <View style={styles.flex}>
             <Text style={styles.codeText}>文本模型复用 OCR API Key</Text>
-            <Text style={styles.muted}>关闭后可以为 deepseek-flash / deepseek-v4-flash 单独填写 key。</Text>
+            <Text style={styles.muted}>
+              {canReuseAiOcrKey ? '关闭后可以为 deepseek-flash / deepseek-v4-flash 单独填写 key。' : 'OCR.space 的 key 不能用于 DeepSeek，需要单独填写文本 API Key。'}
+            </Text>
           </View>
         </Pressable>
         {aiOcrUseSameKey ? null : (
@@ -2759,6 +2767,9 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderBottomWidth: 1,
     borderBottomColor: '#EFE6D5',
+  },
+  disabledBlock: {
+    opacity: 0.54,
   },
   checkbox: {
     width: 26,

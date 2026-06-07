@@ -92,7 +92,7 @@ def main():
         expect(page.get_by_text("文本模型 deepseek-v4-flash 已参与整理，并采用文本模型结果", exact=False).first).to_be_visible(timeout=15000)
         page.wait_for_timeout(1000)
 
-        assert captured["authorization"] == "Bearer test-deepseek-key", f"Unexpected auth header: {captured}"
+        assert captured["authorization"] == "Bearer " + "test-deepseek-key", f"Unexpected auth header: {captured}"
         assert captured["model"] == "deepseek-v4-flash", f"Unexpected model: {captured}"
         assert "G02 x12" in captured["user_text"], f"OCR text was not sent to text model: {captured}"
 
