@@ -182,7 +182,7 @@ export default function App() {
   }
 
   const stats = getInventoryStats(data);
-  const compactChrome = viewport.height < 620;
+  const compactChrome = viewport.height < 620 || tab === 'inventory';
 
   return (
     <SafeAreaView style={[styles.shell, Platform.OS === 'web' && styles.webShell, Platform.OS === 'web' && { height: viewport.height }]}>
@@ -277,10 +277,11 @@ function InventoryScreen({
   const searchSeries = getSearchSeries(query);
   const compactInventory = viewport.width < 430;
   const keyboardCompactInventory = compactInventory && searchFocused;
+  const searchMode = keyboardCompactInventory;
   const stickyPanelMaxHeight = compactInventory
-    ? keyboardCompactInventory
-      ? Math.max(132, Math.min(180, viewport.height * 0.28))
-      : Math.max(300, Math.min(360, viewport.height * 0.42))
+    ? searchMode
+      ? 66
+      : Math.max(218, Math.min(250, viewport.height * 0.32))
     : undefined;
   const showSearchNumberPad = ENABLE_SEARCH_NUMBER_PAD && Platform.OS === 'web' && searchFocused && searchKeypadVisible && Boolean(searchSeries);
 
@@ -416,17 +417,18 @@ function InventoryScreen({
           styles.panel,
           styles.stickyPanel,
           compactInventory && styles.stickyPanelCompact,
+          searchMode && styles.stickyPanelSearchMode,
           compactInventory && { maxHeight: stickyPanelMaxHeight },
         ]}
       >
         <ScrollView
-          scrollEnabled={compactInventory}
+          scrollEnabled={compactInventory && !searchMode}
           nestedScrollEnabled
           keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={compactInventory}
+          showsVerticalScrollIndicator={compactInventory && !searchMode}
           contentContainerStyle={compactInventory ? styles.stickyPanelContentCompact : undefined}
         >
-        <View style={styles.selectedRow}>
+        <View style={[styles.selectedRow, searchMode && styles.selectedRowSearchMode]}>
           <ColorSwatch color={selectedColor.hex} />
           <View style={styles.flex}>
             <Text style={styles.bigCode}>{selectedColor.code}</Text>
@@ -436,6 +438,8 @@ function InventoryScreen({
           </View>
         </View>
 
+        {searchMode ? null : (
+          <>
         <View style={styles.inventoryActionGrid}>
           <View style={styles.inputBlockGrid}>
             <Text style={styles.label}>颗数 / 盘点值</Text>
@@ -475,8 +479,8 @@ function InventoryScreen({
         ) : null}
 
         {data.purchaseLists.length ? (
-          <View style={styles.purchasePickerBlock}>
-            <Text style={styles.label}>加入采购表</Text>
+          <View style={[styles.purchasePickerBlock, compactInventory && styles.purchasePickerBlockCompact]}>
+            {compactInventory ? null : <Text style={styles.label}>加入采购表</Text>}
             <View style={styles.purchasePickerRow}>
               <Pressable accessibilityLabel="选择采购表" style={styles.purchaseSelect} onPress={() => setPurchasePickerOpen((open) => !open)}>
                 <Text style={styles.purchaseSelectText}>{selectedPurchaseList?.name ?? '选择采购表'}</Text>
@@ -507,6 +511,8 @@ function InventoryScreen({
             <ActionButton label="加入采购清单" onPress={addSelectedToPurchaseList} tone="neutral" />
           </View>
         )}
+          </>
+        )}
         </ScrollView>
       </View>
 
@@ -521,10 +527,8 @@ function InventoryScreen({
               if (ENABLE_SEARCH_NUMBER_PAD && searchSeries) setSearchKeypadVisible(true);
             }}
             onBlur={() => {
-              if (Platform.OS !== 'web') {
-                setSearchFocused(false);
-                setSearchKeypadVisible(false);
-              }
+              setSearchFocused(false);
+              setSearchKeypadVisible(false);
             }}
             placeholder={searchSeries ? `输入数字，如 ${searchSeries}9` : '输入色系字母或色名，如 A / 浅棕'}
             autoCapitalize="characters"
@@ -2312,6 +2316,10 @@ const styles = StyleSheet.create({
     padding: 10,
     overflow: 'hidden',
   },
+  stickyPanelSearchMode: {
+    paddingVertical: 8,
+    marginBottom: 6,
+  },
   stickyPanelContentCompact: {
     paddingBottom: 2,
   },
@@ -2358,6 +2366,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
     marginBottom: 8,
+  },
+  selectedRowSearchMode: {
+    marginBottom: 0,
   },
   bigCode: {
     fontFamily: fonts.mono,
@@ -2598,6 +2609,9 @@ const styles = StyleSheet.create({
   },
   purchasePickerBlock: {
     marginBottom: 2,
+  },
+  purchasePickerBlockCompact: {
+    marginTop: 2,
   },
   purchasePickerRow: {
     flexDirection: 'row',
