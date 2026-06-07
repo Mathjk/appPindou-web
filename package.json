@@ -33,7 +33,8 @@
     "test:crop": "python scripts/crop-interaction-test.py",
     "test:ocr-image": "python scripts/ocr-image-pipeline-test.py",
     "test:ocr-storage": "python scripts/ocr-storage-quota-test.py",
-    "test:ocr-multiline": "python scripts/ocr-multiline-legend-test.py"
+    "test:ocr-multiline": "python scripts/ocr-multiline-legend-test.py",
+    "test:search-keyboard": "python scripts/search-keyboard-layout-test.py"
   },
   "private": true
 }

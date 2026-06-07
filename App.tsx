@@ -81,8 +81,43 @@ function getSearchSeries(value: string) {
   return SEARCH_SERIES_ORDER.find((item) => normalized === item || new RegExp(`^${item}\\d*$`).test(normalized));
 }
 
-export default function App() {
+function useResponsiveViewport() {
   const viewport = useWindowDimensions();
+  const [webViewportHeight, setWebViewportHeight] = useState(viewport.height);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const updateHeight = () => {
+      setWebViewportHeight(Math.round(window.visualViewport?.height ?? window.innerHeight ?? viewport.height));
+    };
+    updateHeight();
+    window.visualViewport?.addEventListener('resize', updateHeight);
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      window.visualViewport?.removeEventListener('resize', updateHeight);
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, [viewport.height]);
+
+  return {
+    ...viewport,
+    height: Platform.OS === 'web' ? webViewportHeight : viewport.height,
+  };
+}
+
+function useWebViewportKeyboardResize() {
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) return;
+    const content = meta.getAttribute('content') ?? '';
+    if (content.includes('interactive-widget=')) return;
+    meta.setAttribute('content', `${content}, interactive-widget=resizes-content`);
+  }, []);
+}
+
+export default function App() {
+  const viewport = useResponsiveViewport();
   const [tab, setTab] = useState<TabKey>('inventory');
   const [data, setData] = useState<AppData | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -95,6 +130,8 @@ export default function App() {
       .then(setData)
       .finally(() => setLoaded(true));
   }, []);
+
+  useWebViewportKeyboardResize();
 
   useEffect(() => {
     if (loaded && data) {
@@ -206,7 +243,7 @@ function InventoryScreen({
   updateData: UpdateData;
   setNotice: ShowNotice;
 }) {
-  const viewport = useWindowDimensions();
+  const viewport = useResponsiveViewport();
   const [query, setQuery] = useState('');
   const [series, setSeries] = useState('ALL');
   const [searchFocused, setSearchFocused] = useState(false);
@@ -224,6 +261,12 @@ function InventoryScreen({
   const selectedPurchaseList = data.purchaseLists.find((list) => list.id === selectedPurchaseListId) ?? data.purchaseLists[0];
   const searchSeries = getSearchSeries(query);
   const compactInventory = viewport.width < 430;
+  const keyboardCompactInventory = compactInventory && searchFocused;
+  const stickyPanelMaxHeight = compactInventory
+    ? keyboardCompactInventory
+      ? Math.max(132, Math.min(180, viewport.height * 0.28))
+      : Math.max(300, Math.min(360, viewport.height * 0.42))
+    : undefined;
   const showSearchNumberPad = ENABLE_SEARCH_NUMBER_PAD && Platform.OS === 'web' && searchFocused && searchKeypadVisible && Boolean(searchSeries);
 
   useEffect(() => {
@@ -358,7 +401,7 @@ function InventoryScreen({
           styles.panel,
           styles.stickyPanel,
           compactInventory && styles.stickyPanelCompact,
-          compactInventory && { maxHeight: Math.max(300, Math.min(360, viewport.height * 0.42)) },
+          compactInventory && { maxHeight: stickyPanelMaxHeight },
         ]}
       >
         <ScrollView
@@ -1691,7 +1734,7 @@ function CropModal({
   onCancel: () => void;
   onConfirm: (crop: CropPixels) => void;
 }) {
-  const viewport = useWindowDimensions();
+  const viewport = useResponsiveViewport();
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [cropRect, setCropRect] = useState<DisplayCropRect>({ x: 0, y: 0, width: 1, height: 1 });
   const cropRef = useRef(cropRect);

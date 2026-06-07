@@ -41,6 +41,7 @@ yarn-error.*
 .tmp-smoke/
 .tmp-pages/
 .tmp-crop/
+.tmp-keyboard/
 .tmp-ocrtest/
 .tmp-ocrtest-input.ts
 __pycache__/
