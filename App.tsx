@@ -1376,7 +1376,28 @@ async function persistProjectImage(projectId: string, uri: string, kind = 'image
 
 async function normalizePatternImageForCrop(uri: string) {
   if (isWebCanvasAvailable()) {
-    return { uri };
+    // On web, we normalize the image through canvas so that display sizing and cropping
+    // both work from identical, fully-decoded pixel dimensions. This also bakes in any
+    // EXIF orientation the browser applied and caps very large phone photos so toDataURL
+    // doesn't blow up memory on mobile.
+    try {
+      const image = await loadWebImage(uri);
+      const sourceWidth = getLoadedImageWidth(image);
+      const sourceHeight = getLoadedImageHeight(image);
+      if (!sourceWidth || !sourceHeight) return { uri };
+      const maxSide = 2200;
+      const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+      const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const context = get2dContext(canvas);
+      context.drawImage(image, 0, 0, sourceWidth, sourceHeight, 0, 0, targetWidth, targetHeight);
+      return { uri: canvas.toDataURL('image/png') };
+    } catch {
+      return { uri };
+    }
   }
   return ImageManipulator.manipulateAsync(
     uri,
@@ -1479,7 +1500,18 @@ function isWebCanvasAvailable() {
 function loadWebImage(uri: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = document.createElement('img');
-    image.onload = () => resolve(image);
+    image.onload = async () => {
+      // Wait for full decode to ensure naturalWidth/naturalHeight are accurate
+      // This is especially important on mobile browsers
+      try {
+        if (typeof image.decode === 'function') {
+          await image.decode();
+        }
+      } catch {
+        // decode() may fail on some browsers, but image should still be usable
+      }
+      resolve(image);
+    };
     image.onerror = () => reject(new Error('图片加载失败，无法裁剪'));
     image.decoding = 'async';
     image.src = uri;
@@ -1672,11 +1704,23 @@ function CropModal({
 
   useEffect(() => {
     if (!visible || !imageUri) return;
-    Image.getSize(
-      imageUri,
-      (width, height) => setImageSize({ width, height }),
-      () => setImageSize({ width: 0, height: 0 }),
-    );
+    // On web, use loadWebImage to get naturalWidth/naturalHeight consistently
+    // This ensures the same dimensions are used for display and cropping
+    if (isWebCanvasAvailable()) {
+      loadWebImage(imageUri)
+        .then((image) => {
+          const width = getLoadedImageWidth(image);
+          const height = getLoadedImageHeight(image);
+          setImageSize({ width, height });
+        })
+        .catch(() => setImageSize({ width: 0, height: 0 }));
+    } else {
+      Image.getSize(
+        imageUri,
+        (width, height) => setImageSize({ width, height }),
+        () => setImageSize({ width: 0, height: 0 }),
+      );
+    }
   }, [imageUri, visible]);
 
   const displaySize = useMemo(() => {
