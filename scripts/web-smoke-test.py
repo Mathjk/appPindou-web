@@ -32,7 +32,7 @@ def main():
         expect(page.get_by_text("G2").first).to_be_visible()
         page.get_by_text("G2").first.click()
         expect(page.get_by_text("浅棕").first).to_be_visible()
-        page.get_by_text("当前每份 1000 颗").click()
+        page.get_by_text("份数（当前每份1000颗）").click()
         page.get_by_label("每份颗数").fill("1200")
         page.get_by_text("保存", exact=True).click()
         page.get_by_label("份数").fill("2")

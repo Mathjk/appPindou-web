@@ -72,6 +72,175 @@ const SEARCH_SERIES_ORDER = [...MARD_SERIES_ORDER].sort((left, right) => right.l
 const NUMBER_PAD_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
 const ENABLE_SEARCH_NUMBER_PAD = false;
 
+type AiPreset = {
+  id: string;
+  title: string;
+  tag: string;
+  endpoint: string;
+  model: string;
+  note: string;
+};
+
+const TEXT_MODEL_PRESETS: AiPreset[] = [
+  {
+    id: 'openrouter-free',
+    title: 'OpenRouter Free',
+    tag: '免费路由',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    model: 'openrouter/free',
+    note: '最适合先试用，会自动选择可用免费模型；稳定性取决于当前免费池。',
+  },
+  {
+    id: 'deepseek-v4-flash',
+    title: 'DeepSeek V4 Flash',
+    tag: '默认推荐',
+    endpoint: 'https://api.deepseek.com/chat/completions',
+    model: 'deepseek-v4-flash',
+    note: '适合把 OCR 原文整理成 JSON，用量低、中文指令稳定。',
+  },
+  {
+    id: 'mistral-small',
+    title: 'Mistral AI Studio',
+    tag: '免费额度',
+    endpoint: 'https://api.mistral.ai/v1/chat/completions',
+    model: 'mistral-small-latest',
+    note: '免费模式适合评估和原型；长期使用需要关注限额。',
+  },
+  {
+    id: 'groq-llama',
+    title: 'GroqCloud',
+    tag: '高速',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'llama-3.3-70b-versatile',
+    note: 'OpenAI-compatible，适合低延迟文本整理。',
+  },
+  {
+    id: 'hf-router',
+    title: 'Hugging Face',
+    tag: '模型多',
+    endpoint: 'https://router.huggingface.co/v1/chat/completions',
+    model: 'openai/gpt-oss-120b:fastest',
+    note: '可换成 HF Inference Providers 里当前可用的聊天模型。',
+  },
+  {
+    id: 'cohere-command',
+    title: 'Cohere',
+    tag: '企业向',
+    endpoint: 'https://api.cohere.ai/compatibility/v1/chat/completions',
+    model: 'command-a-plus-05-2026',
+    note: '通过 Compatibility API 接入，适合文本整理和结构化输出。',
+  },
+  {
+    id: 'cloudflare-workers',
+    title: 'Cloudflare Workers AI',
+    tag: '需账号ID',
+    endpoint: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions',
+    model: '@cf/meta/llama-3.1-8b-instruct',
+    note: '需要把 {account_id} 替换成自己的 Cloudflare Account ID。',
+  },
+  {
+    id: 'cerebras-gpt-oss',
+    title: 'Cerebras Inference',
+    tag: '高速',
+    endpoint: 'https://api.cerebras.ai/v1/chat/completions',
+    model: 'gpt-oss-120b',
+    note: 'OpenAI-compatible，适合大模型高速文本整理。',
+  },
+  {
+    id: 'openai-mini',
+    title: 'OpenAI',
+    tag: '主流',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    model: 'gpt-4.1-mini',
+    note: '主流稳定方案，成本低于旗舰模型，也可换成账号内可用的新模型。',
+  },
+  {
+    id: 'gemini-flash',
+    title: 'Google Gemini',
+    tag: '主流',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    model: 'gemini-2.5-flash',
+    note: 'Gemini OpenAI compatibility 接口，可用于文本整理。',
+  },
+];
+
+const VISION_MODEL_PRESETS: AiPreset[] = [
+  {
+    id: 'ocr-space',
+    title: 'OCR.space',
+    tag: '免费测试',
+    endpoint: 'https://api.ocr.space/parse/image',
+    model: 'ocr.space-engine2',
+    note: '当前默认方案；免费测试 key 可走通流程，稳定使用建议换自己的 key。',
+  },
+  {
+    id: 'openrouter-vision',
+    title: 'OpenRouter Vision',
+    tag: '免费路由',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    model: 'openrouter/free',
+    note: '当前代码支持 image_url 消息；路由会筛选支持图片理解的免费模型。',
+  },
+  {
+    id: 'groq-vision',
+    title: 'GroqCloud Vision',
+    tag: '高速',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    note: '支持 image_url 的视觉模型；裁剪图过大时需要注意请求大小限制。',
+  },
+  {
+    id: 'mistral-vision',
+    title: 'Mistral Vision',
+    tag: '免费额度',
+    endpoint: 'https://api.mistral.ai/v1/chat/completions',
+    model: 'mistral-small-2506',
+    note: '走 Mistral Chat Completions 视觉模型；不同于 Mistral 专用 OCR 接口。',
+  },
+  {
+    id: 'openai-vision',
+    title: 'OpenAI Vision',
+    tag: '主流',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    model: 'gpt-4.1-mini',
+    note: '适合直接从裁剪图里识别色号和数量；需要 OpenAI API key。',
+  },
+  {
+    id: 'gemini-vision',
+    title: 'Google Gemini Vision',
+    tag: '主流',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    model: 'gemini-2.5-flash',
+    note: 'Gemini OpenAI compatibility 支持图片输入，可作为 OCR.space 的替代。',
+  },
+  {
+    id: 'hf-vlm',
+    title: 'Hugging Face VLM',
+    tag: '可选',
+    endpoint: 'https://router.huggingface.co/v1/chat/completions',
+    model: 'Qwen/Qwen2.5-VL-3B-Instruct:fastest',
+    note: '适合尝试开源视觉语言模型；可换成 HF 当前可用的 VLM。',
+  },
+];
+
+const FUTURE_AI_ADAPTERS = [
+  {
+    title: 'Azure AI Vision',
+    tag: '后续适配',
+    note: 'Read/OCR 是异步 REST 协议，会返回 Operation-Location；不能直接填进当前 chat completions。',
+  },
+  {
+    title: 'Anthropic Claude',
+    tag: '后续适配',
+    note: '原生 Messages API 使用 x-api-key 和 anthropic-version 头；需要单独请求适配。',
+  },
+  {
+    title: 'Cloudflare Workers AI 视觉',
+    tag: '后续适配',
+    note: '文本可走 OpenAI-compatible；视觉模型需要按 Workers AI 当前模型接口单独确认和适配。',
+  },
+];
+
 function normalizeSearchQuery(value: string) {
   return value.replace(/[a-z]/g, (letter) => letter.toUpperCase()).trimStart();
 }
@@ -182,50 +351,39 @@ export default function App() {
   }
 
   const stats = getInventoryStats(data);
-  const compactChrome = viewport.height < 620 || tab === 'inventory';
 
   return (
     <SafeAreaView style={[styles.shell, Platform.OS === 'web' && styles.webShell, Platform.OS === 'web' && { height: viewport.height }]}>
       <StatusBar style="dark" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.shell}>
-        <View style={[styles.header, compactChrome && styles.headerCompact]}>
-          <View style={styles.headerTop}>
-            <View style={styles.headerTitleBlock}>
-              <Text style={styles.brand}>MARD 豆仓</Text>
-              <Text style={styles.headerSub}>291 色库存台账</Text>
+        {tab === 'inventory' ? (
+          <View style={styles.header}>
+            <Text style={[styles.brand, styles.headerBrand]}>MARD 豆仓</Text>
+            <View style={styles.headerCoverage}>
+              <Text style={styles.headerCoverageText}>
+                {stats.stocked}/{stats.totalColors}
+              </Text>
             </View>
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{stats.low} 低库存</Text>
             </View>
           </View>
-          {compactChrome ? null : <View style={styles.headerMetrics}>
-            <View style={styles.headerMetric}>
-              <Text style={styles.headerMetricValue}>{stats.stocked}</Text>
-              <Text style={styles.headerMetricLabel}>有库存</Text>
-            </View>
-            <View style={styles.headerMetric}>
-              <Text style={styles.headerMetricValue}>{stats.totalColors}</Text>
-              <Text style={styles.headerMetricLabel}>总色数</Text>
-            </View>
-            <View style={styles.headerMetricWide}>
-              <Text style={styles.headerMetricValue}>{stats.totalBeads}</Text>
-              <Text style={styles.headerMetricLabel}>总颗数</Text>
-            </View>
-          </View>}
-        </View>
+        ) : null}
 
         {notice ? (
           <View style={styles.notice}>
             <View style={styles.noticeInline}>
               <Text style={styles.noticeText}>{notice}</Text>
-              {noticeUndoId ? (
-                <Pressable style={styles.noticeButton} onPress={undoNoticeAction}>
-                  <Text style={styles.noticeButtonText}>撤销操作</Text>
+              <View style={styles.noticeActions}>
+                {noticeUndoId ? (
+                  <Pressable style={styles.noticeButton} onPress={undoNoticeAction}>
+                    <Text style={styles.noticeButtonText}>撤销操作</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable style={styles.noticeButton} onPress={() => showNotice('')}>
+                  <Text style={styles.noticeButtonText}>关闭</Text>
                 </Pressable>
-              ) : null}
-              <Pressable style={styles.noticeButton} onPress={() => showNotice('')}>
-                <Text style={styles.noticeButtonText}>关闭</Text>
-              </Pressable>
+              </View>
             </View>
           </View>
         ) : null}
@@ -442,26 +600,25 @@ function InventoryScreen({
           <>
         <View style={styles.inventoryActionGrid}>
           <View style={styles.inputBlockGrid}>
-            <Text style={styles.label}>颗数 / 盘点值</Text>
+            <Text style={styles.label}>颗数</Text>
             <View style={styles.actionInputRow}>
-              <TextInput style={[styles.input, styles.actionInput]} value={amount} onChangeText={setAmount} keyboardType="number-pad" accessibilityLabel="颗数 / 盘点值" />
+              <TextInput style={[styles.input, styles.actionInput]} value={amount} onChangeText={setAmount} keyboardType="number-pad" accessibilityLabel="颗数" />
               <RoundActionButton label="+" accessibilityLabel="按颗增加" tone="plus" onPress={() => mutateSelected('amount-add')} />
               <RoundActionButton label="-" accessibilityLabel="按颗减少" tone="minus" onPress={() => mutateSelected('amount-remove')} />
-              <Pressable style={styles.auditButton} onPress={() => mutateSelected('adjust')}>
-                <Text style={styles.auditButtonText}>盘点</Text>
-              </Pressable>
             </View>
           </View>
           <View style={styles.inputBlockGrid}>
             <Pressable
               style={styles.packLabelRow}
+              accessibilityLabel="修改份规格"
               onPress={() => {
                 setInventoryPackSize(String(data.settings.inventoryPackSize));
                 setEditingPackSize(true);
               }}
             >
-              <Text style={styles.label}>份数</Text>
-              <Text style={styles.packHint}>当前每份 {packSize} 颗</Text>
+              <Text style={styles.label}>
+                份数（当前每份<Text style={styles.packSizeLink}>{packSize}</Text>颗）
+              </Text>
             </Pressable>
             <View style={styles.actionInputRow}>
               <TextInput style={[styles.input, styles.actionInput]} value={packs} onChangeText={setPacks} keyboardType="number-pad" accessibilityLabel="份数" />
@@ -1190,6 +1347,8 @@ function SettingsScreen({
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
   const canReuseAiOcrKey = !aiOcrEndpoint.trim().toLowerCase().includes('ocr.space') && !aiOcrModel.trim().toLowerCase().startsWith('ocr.space');
+  const activeVisionPresetId = VISION_MODEL_PRESETS.find((preset) => preset.endpoint === aiOcrEndpoint.trim() && preset.model === aiOcrModel.trim())?.id;
+  const activeTextPresetId = TEXT_MODEL_PRESETS.find((preset) => preset.endpoint === aiOcrTextEndpoint.trim() && preset.model === aiOcrTextModel.trim())?.id;
 
   useEffect(() => {
     if (resetCountdown <= 0) return;
@@ -1229,6 +1388,21 @@ function SettingsScreen({
       '修改默认低库存阈值',
     );
     setNotice('设置已保存');
+  };
+
+  const applyVisionPreset = (preset: AiPreset) => {
+    setAiOcrEndpoint(preset.endpoint);
+    setAiOcrModel(preset.model);
+    if (preset.endpoint.includes('ocr.space') || preset.model.startsWith('ocr.space')) {
+      setAiOcrUseSameKey(false);
+    }
+    setNotice(`已套用图片识别预设：${preset.title}`);
+  };
+
+  const applyTextPreset = (preset: AiPreset) => {
+    setAiOcrTextEndpoint(preset.endpoint);
+    setAiOcrTextModel(preset.model);
+    setNotice(`已套用文本模型预设：${preset.title}`);
   };
 
   const saveAiOcrSettings = () => {
@@ -1313,11 +1487,24 @@ function SettingsScreen({
       </View>
 
       <View style={styles.panel}>
-        <Text style={styles.panelTitle}>OCR 接口</Text>
+        <Text style={styles.panelTitle}>OCR 与模型</Text>
         <Text style={styles.muted}>
-          默认使用 OCR.space 免费测试接口先走通图片 OCR；文本整理可以继续接 DeepSeek 或其他 OpenAI-compatible 文本模型。OCR.space 免费测试 key 是
-          helloworld，稳定使用建议换成自己的免费 key。
+          图片识别先把图纸裁剪区转成文本，文本模型再把 OCR 原文整理成 MARD 色号和颗数。当前可直接套用 OpenAI-compatible
+          /chat/completions 供应商；不兼容协议先列在后续适配。
         </Text>
+
+        <Text style={styles.aiSectionTitle}>图片识别预设</Text>
+        <View style={styles.presetGrid}>
+          {VISION_MODEL_PRESETS.map((preset) => (
+            <AiPresetCard
+              key={preset.id}
+              preset={preset}
+              active={activeVisionPresetId === preset.id}
+              onPress={() => applyVisionPreset(preset)}
+            />
+          ))}
+        </View>
+
         <LabeledInput label="OCR API Key" value={aiOcrApiKey} onChangeText={setAiOcrApiKey} placeholder="helloworld" secureTextEntry autoCapitalize="none" />
         <LabeledInput
           label="OCR Endpoint"
@@ -1327,6 +1514,21 @@ function SettingsScreen({
           autoCapitalize="none"
         />
         <LabeledInput label="OCR 引擎/模型" value={aiOcrModel} onChangeText={setAiOcrModel} placeholder="ocr.space-engine2" autoCapitalize="none" />
+
+        <View style={styles.divider} />
+
+        <Text style={styles.aiSectionTitle}>文本整理预设</Text>
+        <View style={styles.presetGrid}>
+          {TEXT_MODEL_PRESETS.map((preset) => (
+            <AiPresetCard
+              key={preset.id}
+              preset={preset}
+              active={activeTextPresetId === preset.id}
+              onPress={() => applyTextPreset(preset)}
+            />
+          ))}
+        </View>
+
         <Pressable
           disabled={!canReuseAiOcrKey}
           style={[styles.checkRow, !canReuseAiOcrKey && styles.disabledBlock]}
@@ -1353,6 +1555,20 @@ function SettingsScreen({
           autoCapitalize="none"
         />
         <LabeledInput label="文本模型" value={aiOcrTextModel} onChangeText={setAiOcrTextModel} placeholder="deepseek-v4-flash" autoCapitalize="none" />
+
+        <Text style={styles.aiSectionTitle}>后续适配</Text>
+        <View style={styles.futureAdapterList}>
+          {FUTURE_AI_ADAPTERS.map((adapter) => (
+            <View key={adapter.title} style={styles.futureAdapter}>
+              <View style={styles.presetHeader}>
+                <Text style={styles.presetTitle}>{adapter.title}</Text>
+                <Text style={styles.presetTag}>{adapter.tag}</Text>
+              </View>
+              <Text style={styles.muted}>{adapter.note}</Text>
+            </View>
+          ))}
+        </View>
+
         <ActionButton label="保存 OCR 设置" onPress={saveAiOcrSettings} tone="amber" />
       </View>
 
@@ -1679,6 +1895,21 @@ function LabeledInput({
         secureTextEntry={secureTextEntry}
       />
     </View>
+  );
+}
+
+function AiPresetCard({ preset, active, onPress }: { preset: AiPreset; active?: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={[styles.presetCard, active && styles.presetCardActive]} onPress={onPress}>
+      <View style={styles.presetHeader}>
+        <Text style={[styles.presetTitle, active && styles.presetTitleActive]}>{preset.title}</Text>
+        <Text style={[styles.presetTag, active && styles.presetTagActive]}>{preset.tag}</Text>
+      </View>
+      <Text style={styles.presetModel} numberOfLines={1}>
+        {preset.model}
+      </Text>
+      <Text style={styles.muted}>{preset.note}</Text>
+    </Pressable>
   );
 }
 
@@ -2177,6 +2408,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#2A3142',
     boxShadow: '0 14px 30px rgba(18, 22, 32, 0.20)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   headerCompact: {
     marginBottom: 6,
@@ -2198,6 +2432,9 @@ const styles = StyleSheet.create({
     color: colors.white,
     letterSpacing: 0,
   },
+  headerBrand: {
+    flex: 1,
+  },
   headerSub: {
     color: '#B8C3D6',
     marginTop: 4,
@@ -2217,6 +2454,24 @@ const styles = StyleSheet.create({
     color: '#A8F0D3',
     fontWeight: '900',
     fontSize: 12,
+  },
+  headerCoverage: {
+    minWidth: 68,
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#3C465F',
+    backgroundColor: colors.panelDark2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  headerCoverageText: {
+    color: colors.white,
+    fontFamily: fonts.display,
+    fontSize: 17,
+    fontWeight: '900',
+    letterSpacing: 0,
   },
   headerMetrics: {
     flexDirection: 'row',
@@ -2260,8 +2515,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   notice: {
-    marginHorizontal: 10,
-    marginBottom: 8,
+    position: 'absolute',
+    top: 8,
+    left: 10,
+    right: 10,
+    zIndex: 30,
+    elevation: 30,
     padding: 9,
     backgroundColor: colors.amberSoft,
     borderWidth: 1,
@@ -2270,12 +2529,12 @@ const styles = StyleSheet.create({
   },
   noticeInline: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
   },
   noticeText: {
     color: '#74460D',
+    flex: 1,
     flexShrink: 1,
     lineHeight: 20,
     fontWeight: '700',
@@ -2283,7 +2542,7 @@ const styles = StyleSheet.create({
   noticeActions: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 8,
+    justifyContent: 'flex-end',
   },
   noticeButton: {
     paddingHorizontal: 10,
@@ -2345,6 +2604,14 @@ const styles = StyleSheet.create({
     fontFamily: fonts.text,
     fontWeight: '900',
     color: colors.ink,
+    marginBottom: 8,
+  },
+  aiSectionTitle: {
+    fontSize: 15,
+    fontFamily: fonts.text,
+    fontWeight: '900',
+    color: colors.ink,
+    marginTop: 12,
     marginBottom: 8,
   },
   muted: {
@@ -2409,6 +2676,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   inventoryActionGrid: {
+    flexDirection: 'row',
     gap: 7,
     marginBottom: 4,
   },
@@ -2451,31 +2719,15 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     lineHeight: 24,
   },
-  auditButton: {
-    minHeight: 38,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    backgroundColor: colors.bgAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  auditButtonText: {
-    color: colors.ink,
-    fontWeight: '800',
-  },
   packLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 6,
+    alignSelf: 'flex-start',
   },
-  packHint: {
+  packSizeLink: {
     color: colors.blue,
-    fontSize: 12,
     fontWeight: '800',
-    marginBottom: 5,
+    textDecorationLine: 'underline',
   },
   packEditor: {
     flexDirection: 'row',
@@ -2979,6 +3231,69 @@ const styles = StyleSheet.create({
   checkboxText: {
     color: '#FFFFFF',
     fontWeight: '900',
+  },
+  presetGrid: {
+    gap: 8,
+    marginBottom: 10,
+  },
+  presetCard: {
+    padding: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
+    gap: 6,
+  },
+  presetCardActive: {
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft,
+  },
+  presetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  presetTitle: {
+    color: colors.ink,
+    fontFamily: fonts.text,
+    fontWeight: '900',
+    flexShrink: 1,
+  },
+  presetTitleActive: {
+    color: colors.blue,
+  },
+  presetTag: {
+    color: colors.blue,
+    backgroundColor: colors.blueSoft,
+    borderRadius: 8,
+    overflow: 'hidden',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  presetTagActive: {
+    color: '#FFFFFF',
+    backgroundColor: colors.blue,
+  },
+  presetModel: {
+    color: colors.ink,
+    fontSize: 12,
+    fontFamily: fonts.mono,
+    fontWeight: '800',
+  },
+  futureAdapterList: {
+    gap: 8,
+    marginBottom: 12,
+  },
+  futureAdapter: {
+    padding: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E7B24D',
+    backgroundColor: colors.amberSoft,
+    gap: 6,
   },
   statsGrid: {
     flexDirection: 'row',
