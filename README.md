@@ -7,7 +7,7 @@ MARD 豆仓是一个用于管理 MARD 291 拼豆库存、图纸用量和采购�
 ## 当前定位
 
 - 先以网页端作为主要可测试版本，方便在电脑和手机浏览器里快速验证功能。
-- 数据默认只保存在当前浏览器本地，不依赖后端服务器。
+- 数据默认只保存在当前浏览器本地；登录账号后可以把个人数据同步到 Supabase 云端快照。
 - 代码仍然保持 React Native 结构，大部分界面和业务逻辑可以复用于 Android / iOS App。
 - OCR 先走远程接口，默认使用 OCR.space 测试 Key；后续可以切换为更稳定的 OCR 或视觉模型接口。
 
@@ -97,7 +97,8 @@ G9×1
 ### 设置
 
 - OCR API、Endpoint、模型名可在设置中编辑。
-- 文本整理模型可以单独设置，也可以选择复用 OCR API Key。
+- 文本整理模型可以单独开启或关闭，并与 OCR 模型分别保存服务商 API Key。
+- 支持用户名/密码账号登录，并把本机数据上传到 Supabase 或从云端恢复。
 - 支持复制备份 JSON。
 - 支持导出备份文件。
 - 支持从剪贴板导入备份。
@@ -110,11 +111,37 @@ G9×1
 ## 数据说明
 
 - 网页端数据保存在浏览器本地存储中，由 `@react-native-async-storage/async-storage` 在 Web 上映射到 `localStorage`。
-- 换设备、换浏览器、清除浏览器数据前，请先导出备份。
+- 换设备、换浏览器、清除浏览器数据前，可以登录账号同步，也建议额外导出一份备份。
+- Supabase 云端同步采用每个用户一份最新快照。第一次登录发现云端已有快照时，不会自动覆盖本机；需要手动选择“上传本机数据”或“从云端恢复”。
 - 上传图纸、裁剪图和 OCR 预览图只保留在当前运行会话中；为了避免浏览器本地存储超过容量限制，图片数据不会长期写入备份和持久化存储。
 - 图纸用量、OCR 识别出的色号数量、豆仓库存、采购表、设置和历史操作会保存。
+- OCR 和文本模型 API Key 会随本机/云端应用快照保存。Supabase 表已用 RLS 限制为本人可读写；如果不想上传这些密钥，请先在设置里清空后再上传云端。
 - 备份格式是结构化 JSON，库存会按色号排序，方便以后迁移。
 - 色卡 HEX 只用于屏幕近似展示，库存、图纸和采购逻辑都以 MARD 色号为准。
+
+## Supabase 账号同步设置
+
+当前前端使用以下公开配置：
+
+```text
+Project URL: https://bjgxzxblwzwdsdgxznps.supabase.co
+Publishable key: sb_publishable_3lyN7_8dXPQvVgRk51ymyA_G1U6_dQZ
+```
+
+这类 publishable key 会出现在网页源码里，安全性依赖 Supabase RLS。不要把 `service_role` 或 `sb_secret_...` 放进前端或 GitHub Pages。
+
+Supabase 项目需要先完成：
+
+1. Project Settings / Data API：启用 Data API，不启用 Automatically expose new tables，启用 automatic RLS。
+2. Authentication / Sign In：关闭邮箱确认。当前用户名登录内部使用不可收信邮箱映射，如果开启邮箱确认会无法完成注册登录。
+3. SQL Editor 执行 [`supabase/app_pindou_account_schema.sql`](supabase/app_pindou_account_schema.sql)。
+
+账号系统使用两张表：
+
+- `profiles`：保存登录用户名和可选找回邮箱。
+- `app_snapshots`：保存当前用户的一份最新应用快照。
+
+两张表都开启 RLS，并只授权 `authenticated` 用户访问自己的行。
 
 ## 本地运行
 

@@ -63,7 +63,9 @@ PUBLIC_URL=/ npm run build:web
 
 ## 数据和 OCR 注意事项
 
-- 网页版数据保存在当前浏览器本地，不会自动同步到另一台手机或电脑。
-- 换手机、清浏览器数据、换浏览器前，请先在设置里导出备份。
+- 网页版数据默认保存在当前浏览器本地；登录账号后可以同步到 Supabase 云端快照。
+- 换手机、清浏览器数据、换浏览器前，可以先登录并上传本机数据，也建议额外在设置里导出备份。
+- Supabase 前端只使用 Project URL 和 publishable key。不要把 `service_role` 或 `sb_secret_...` 放到 GitHub Pages。
+- 首次启用账号同步前，需要在 Supabase SQL Editor 执行 `supabase/app_pindou_account_schema.sql`，并关闭 Auth 邮箱确认。
 - 上传图片、裁剪、OCR 都在网页端流程里完成。
 - OCR.space 调用需要网络；如果免费测试 key 不稳定，可以在设置里换成自己的 OCR API Key。

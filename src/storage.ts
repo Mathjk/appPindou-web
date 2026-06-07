@@ -19,7 +19,7 @@ export async function loadAppData(): Promise<AppData> {
 }
 
 export async function saveAppData(data: AppData) {
-  const persistable = prepareDataForStorage(data);
+  const persistable = prepareAppDataForPersistence(data);
   try {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
   } catch (error) {
@@ -60,6 +60,14 @@ function isQuotaError(error: unknown) {
   const name = (error as { name?: string }).name ?? '';
   const message = (error as { message?: string }).message ?? '';
   return /quota|exceeded|storage/i.test(`${name} ${message}`);
+}
+
+export function prepareAppDataForPersistence(data: AppData): AppData {
+  return prepareDataForStorage(data);
+}
+
+export function normalizeLoadedAppData(data: Partial<AppData>): AppData {
+  return normalizeAppData(data);
 }
 
 export function exportAppData(data: AppData) {

@@ -24,6 +24,22 @@ import {
 
 import { MARD_291_COLORS, MARD_SERIES_ORDER, getColor, isKnownBeadCode, normalizeBeadCode, tryNormalizeBeadCode } from './src/data/mard291';
 import {
+  accountErrorMessage,
+  ensureProfileForSession,
+  fetchAccountProfile,
+  fetchCloudSnapshotMeta,
+  getCurrentAccountSession,
+  isSupabaseConfigured,
+  loadCloudSnapshot,
+  saveCloudSnapshot,
+  signInWithUsername,
+  signOutAccount,
+  signUpWithUsername,
+  subscribeToAccountChanges,
+  validateAccountPassword,
+  validateAccountUsername,
+} from './src/account';
+import {
   adjustStock,
   addProjectShortageToPurchaseList,
   addPurchaseItem,
@@ -52,6 +68,7 @@ import {
 } from './src/domain';
 import { recognizePatternDraft } from './src/ocr';
 import { exportAppData, loadAppData, parseImportedData, saveAppData } from './src/storage';
+import type { AccountProfile } from './src/account';
 import type { AppData, AppSettings, PatternProject, ProjectItem, PurchaseList } from './src/types';
 
 type TabKey = 'inventory' | 'projects' | 'shopping' | 'settings';
@@ -61,6 +78,26 @@ type SettingsLeaveGuard = {
   hasUnsavedChanges: () => boolean;
   saveChanges: () => void;
   discardChanges: () => void;
+};
+type AccountStatus = 'unconfigured' | 'loading' | 'signed-out' | 'signed-in';
+type AccountPanelState = {
+  status: AccountStatus;
+  profile?: AccountProfile;
+  userId?: string;
+  busy: boolean;
+  syncing: boolean;
+  message?: string;
+  cloudUpdatedAt?: string;
+  lastSyncedAt?: string;
+  autoSyncReady: boolean;
+};
+type AccountActions = {
+  signUp: (username: string, password: string, recoveryEmail?: string) => Promise<void>;
+  signIn: (username: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  uploadCloud: () => Promise<void>;
+  restoreCloud: () => Promise<void>;
+  refreshCloud: () => Promise<void>;
 };
 type OcrProgressStage = 'prepare' | 'vision' | 'text' | 'local';
 type OcrProgressState = {
@@ -543,13 +580,119 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [noticeUndoId, setNoticeUndoId] = useState<string | undefined>();
   const [pendingSettingsTab, setPendingSettingsTab] = useState<TabKey | undefined>();
+  const [account, setAccount] = useState<AccountPanelState>(() => ({
+    status: isSupabaseConfigured ? 'loading' : 'unconfigured',
+    busy: false,
+    syncing: false,
+    autoSyncReady: false,
+    message: isSupabaseConfigured ? '正在检查登录状态...' : 'Supabase 尚未配置',
+  }));
   const lastHistoryIdRef = useRef<string | undefined>(undefined);
   const settingsLeaveGuardRef = useRef<SettingsLeaveGuard | undefined>(undefined);
+  const dataRef = useRef<AppData | null>(null);
+  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  const loadAccountForSession = async (
+    session: Awaited<ReturnType<typeof getCurrentAccountSession>>,
+    message?: string,
+    options?: { keepAutoSync?: boolean },
+  ) => {
+    if (!isSupabaseConfigured) {
+      setAccount({
+        status: 'unconfigured',
+        busy: false,
+        syncing: false,
+        autoSyncReady: false,
+        message: 'Supabase 尚未配置',
+      });
+      return;
+    }
+    if (!session?.user) {
+      setAccount({
+        status: 'signed-out',
+        busy: false,
+        syncing: false,
+        autoSyncReady: false,
+        message: message ?? '未登录，当前仍使用本地数据',
+      });
+      return;
+    }
+
+    setAccount((current) => ({
+      ...current,
+      status: 'signed-in',
+      userId: session.user.id,
+      busy: false,
+      syncing: false,
+      message: message ?? current.message,
+      autoSyncReady: options?.keepAutoSync ? current.autoSyncReady : false,
+    }));
+
+    try {
+      await ensureProfileForSession(session).catch(() => undefined);
+      const [profile, cloudMeta] = await Promise.all([fetchAccountProfile(), fetchCloudSnapshotMeta()]);
+      const fallbackProfile: AccountProfile = {
+        id: session.user.id,
+        username: String(session.user.user_metadata?.username ?? '未命名账号'),
+        recovery_email: String(session.user.user_metadata?.recovery_email ?? '') || null,
+      };
+      setAccount((current) => ({
+        ...current,
+        status: 'signed-in',
+        userId: session.user.id,
+        profile: profile ?? fallbackProfile,
+        cloudUpdatedAt: cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? undefined,
+        busy: false,
+        syncing: false,
+        message: message ?? (cloudMeta ? '已登录，云端已有数据，可选择恢复或上传覆盖' : '已登录，云端还没有快照'),
+        autoSyncReady: options?.keepAutoSync ? current.autoSyncReady : false,
+      }));
+    } catch (error) {
+      setAccount((current) => ({
+        ...current,
+        status: 'signed-in',
+        userId: session.user.id,
+        busy: false,
+        syncing: false,
+        message: accountErrorMessage(error),
+      }));
+    }
+  };
 
   useEffect(() => {
     loadAppData()
       .then(setData)
       .finally(() => setLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    if (!isSupabaseConfigured) return;
+    getCurrentAccountSession()
+      .then((session) => {
+        if (alive) void loadAccountForSession(session);
+      })
+      .catch((error) => {
+        if (!alive) return;
+        setAccount((current) => ({
+          ...current,
+          status: 'signed-out',
+          busy: false,
+          syncing: false,
+          message: accountErrorMessage(error),
+        }));
+      });
+    const unsubscribe = subscribeToAccountChanges((session) => {
+      if (alive) void loadAccountForSession(session, undefined, { keepAutoSync: true });
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
   }, []);
 
   useWebViewportKeyboardResize();
@@ -562,6 +705,36 @@ export default function App() {
       });
     }
   }, [data, loaded]);
+
+  useEffect(() => {
+    if (!loaded || !data || account.status !== 'signed-in' || !account.autoSyncReady) return;
+    if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    autoSyncTimerRef.current = setTimeout(() => {
+      const currentData = dataRef.current;
+      if (!currentData) return;
+      setAccount((current) => ({ ...current, syncing: true, message: '正在自动同步到云端...' }));
+      saveCloudSnapshot(currentData)
+        .then((meta) => {
+          setAccount((current) => ({
+            ...current,
+            syncing: false,
+            cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
+            lastSyncedAt: new Date().toISOString(),
+            message: '已自动同步到云端',
+          }));
+        })
+        .catch((error) => {
+          setAccount((current) => ({
+            ...current,
+            syncing: false,
+            message: accountErrorMessage(error),
+          }));
+        });
+    }, 1400);
+    return () => {
+      if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    };
+  }, [data, loaded, account.status, account.userId, account.autoSyncReady]);
 
   const showNotice: ShowNotice = (message) => {
     setNotice(message);
@@ -608,6 +781,158 @@ export default function App() {
     updateData((current) => undoSingleHistoryEntry(current, noticeUndoId), '撤销操作', { recordHistory: false });
     setNotice('已撤销操作');
     setNoticeUndoId(undefined);
+  };
+
+  const markAccountBusy = (message: string) => {
+    setAccount((current) => ({ ...current, busy: true, message }));
+  };
+
+  const completeAccountLogin = async (session: Awaited<ReturnType<typeof getCurrentAccountSession>>, successNotice: string) => {
+    if (!session?.user) {
+      setAccount({
+        status: 'signed-out',
+        busy: false,
+        syncing: false,
+        autoSyncReady: false,
+        message: '注册已提交，但当前 Supabase 项目要求邮箱确认；请关闭 Auth 邮箱确认后再使用用户名登录',
+      });
+      showNotice('注册已提交，但需要先关闭 Supabase 邮箱确认');
+      return;
+    }
+
+    await loadAccountForSession(session, successNotice);
+    try {
+      const cloudMeta = await fetchCloudSnapshotMeta();
+      if (!cloudMeta && dataRef.current) {
+        const savedMeta = await saveCloudSnapshot(dataRef.current);
+        setAccount((current) => ({
+          ...current,
+          busy: false,
+          autoSyncReady: true,
+          cloudUpdatedAt: savedMeta.updated_at ?? savedMeta.client_updated_at ?? new Date().toISOString(),
+          lastSyncedAt: new Date().toISOString(),
+          message: '已创建云端快照，并开启本次自动同步',
+        }));
+        showNotice(`${successNotice}，已创建云端备份`);
+        return;
+      }
+      setAccount((current) => ({
+        ...current,
+        busy: false,
+        autoSyncReady: false,
+        cloudUpdatedAt: cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? current.cloudUpdatedAt,
+        message: cloudMeta ? '已登录，云端已有快照，请选择恢复或上传覆盖' : successNotice,
+      }));
+      showNotice(cloudMeta ? '已登录；云端已有数据，先选择恢复或上传' : successNotice);
+    } catch (error) {
+      setAccount((current) => ({
+        ...current,
+        busy: false,
+        message: accountErrorMessage(error),
+      }));
+      showNotice(accountErrorMessage(error));
+    }
+  };
+
+  const accountActions: AccountActions = {
+    signUp: async (username, password, recoveryEmail) => {
+      markAccountBusy('正在注册账号...');
+      try {
+        const result = await signUpWithUsername(username, password, recoveryEmail);
+        await completeAccountLogin(result.session, '注册并登录成功');
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
+    signIn: async (username, password) => {
+      markAccountBusy('正在登录...');
+      try {
+        const result = await signInWithUsername(username, password);
+        await completeAccountLogin(result.session, '登录成功');
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
+    signOut: async () => {
+      markAccountBusy('正在退出登录...');
+      try {
+        if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+        await signOutAccount();
+        setAccount({
+          status: 'signed-out',
+          busy: false,
+          syncing: false,
+          autoSyncReady: false,
+          message: '已退出登录，本机数据仍保留',
+        });
+        showNotice('已退出登录');
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
+    uploadCloud: async () => {
+      const currentData = dataRef.current;
+      if (!currentData) return;
+      markAccountBusy('正在上传本机数据到云端...');
+      try {
+        const meta = await saveCloudSnapshot(currentData);
+        setAccount((current) => ({
+          ...current,
+          busy: false,
+          autoSyncReady: true,
+          cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
+          lastSyncedAt: new Date().toISOString(),
+          message: '已上传本机数据，并开启本次自动同步',
+        }));
+        showNotice('本机数据已上传到云端');
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
+    restoreCloud: async () => {
+      markAccountBusy('正在从云端恢复...');
+      try {
+        const snapshot = await loadCloudSnapshot();
+        if (!snapshot) {
+          setAccount((current) => ({ ...current, busy: false, message: '云端还没有快照' }));
+          showNotice('云端还没有快照');
+          return;
+        }
+        setData(snapshot.data);
+        setAccount((current) => ({
+          ...current,
+          busy: false,
+          autoSyncReady: true,
+          cloudUpdatedAt: snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? current.cloudUpdatedAt,
+          lastSyncedAt: new Date().toISOString(),
+          message: '已从云端恢复，并开启本次自动同步',
+        }));
+        showNotice('已从云端恢复数据');
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
+    refreshCloud: async () => {
+      markAccountBusy('正在刷新云端状态...');
+      try {
+        const session = await getCurrentAccountSession();
+        await loadAccountForSession(session, '云端状态已刷新', { keepAutoSync: true });
+      } catch (error) {
+        const message = accountErrorMessage(error);
+        setAccount((current) => ({ ...current, busy: false, message }));
+        showNotice(message);
+      }
+    },
   };
 
   if (!loaded || !data) {
@@ -669,6 +994,8 @@ export default function App() {
               data={data}
               updateData={updateData}
               setNotice={showNotice}
+              account={account}
+              accountActions={accountActions}
               registerLeaveGuard={(guard) => {
                 settingsLeaveGuardRef.current = guard;
               }}
@@ -1794,11 +2121,15 @@ function SettingsScreen({
   data,
   updateData,
   setNotice,
+  account,
+  accountActions,
   registerLeaveGuard,
 }: {
   data: AppData;
   updateData: UpdateData;
   setNotice: ShowNotice;
+  account: AccountPanelState;
+  accountActions: AccountActions;
   registerLeaveGuard: (guard: SettingsLeaveGuard | undefined) => void;
 }) {
   const [threshold, setThreshold] = useState(String(data.settings.defaultLowStockThreshold));
@@ -1815,6 +2146,10 @@ function SettingsScreen({
   const [visionModelOpen, setVisionModelOpen] = useState(false);
   const [textProviderOpen, setTextProviderOpen] = useState(false);
   const [textModelOpen, setTextModelOpen] = useState(false);
+  const [accountMode, setAccountMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [accountUsername, setAccountUsername] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [accountRecoveryEmail, setAccountRecoveryEmail] = useState('');
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
   const activeVisionPreset = findAiPreset(VISION_MODEL_PRESETS, aiOcrEndpoint, aiOcrModel);
@@ -1980,6 +2315,37 @@ function SettingsScreen({
 
   const saveAiOcrSettings = () => saveAllSettings('OCR 接口设置已保存');
 
+  const submitAccountForm = () => {
+    const usernameError = validateAccountUsername(accountUsername);
+    if (usernameError) {
+      setNotice(usernameError);
+      return;
+    }
+    const passwordError = validateAccountPassword(accountPassword);
+    if (passwordError) {
+      setNotice(passwordError);
+      return;
+    }
+    if (accountMode === 'sign-up') {
+      void accountActions.signUp(accountUsername, accountPassword, accountRecoveryEmail).then(() => setAccountPassword(''));
+      return;
+    }
+    void accountActions.signIn(accountUsername, accountPassword).then(() => setAccountPassword(''));
+  };
+
+  const confirmCloudRestore = () => {
+    Alert.alert('从云端恢复', '这会用云端快照覆盖当前本机数据。继续前建议先导出一份本地备份。', [
+      { text: '取消', style: 'cancel' },
+      {
+        text: '确认恢复',
+        style: 'destructive',
+        onPress: () => {
+          void accountActions.restoreCloud();
+        },
+      },
+    ]);
+  };
+
   const copyBackup = async () => {
     await Clipboard.setStringAsync(exportAppData(data));
     setNotice('备份数据已复制到剪贴板');
@@ -2124,6 +2490,91 @@ function SettingsScreen({
         <LabeledInput label="文本模型" value={aiOcrTextModel} onChangeText={setAiOcrTextModel} placeholder="deepseek-v4-flash" autoCapitalize="none" />
 
         <ActionButton label="保存 OCR 设置" onPress={saveAiOcrSettings} tone="amber" />
+      </View>
+
+      <View style={styles.panel}>
+        <View style={styles.panelHeader}>
+          <View style={styles.flex}>
+            <Text style={styles.panelTitle}>账号与云端同步</Text>
+            <Text style={styles.muted}>未登录时继续保存到本机；登录后可把本机数据上传到 Supabase，或从云端恢复。</Text>
+          </View>
+          {account.status === 'signed-in' ? (
+            <View style={styles.accountStatusPill}>
+              <Text style={styles.accountStatusText}>{account.syncing ? '同步中' : account.autoSyncReady ? '已同步' : '已登录'}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {account.status === 'unconfigured' ? (
+          <Text style={styles.warningText}>{account.message}</Text>
+        ) : null}
+
+        {account.status === 'loading' ? <Text style={styles.muted}>{account.message ?? '正在检查登录状态...'}</Text> : null}
+
+        {account.status === 'signed-out' ? (
+          <>
+            <View style={styles.segmentedRow}>
+              <Pressable style={[styles.segmentButton, accountMode === 'sign-in' && styles.segmentButtonActive]} onPress={() => setAccountMode('sign-in')}>
+                <Text style={[styles.segmentButtonText, accountMode === 'sign-in' && styles.segmentButtonTextActive]}>登录</Text>
+              </Pressable>
+              <Pressable style={[styles.segmentButton, accountMode === 'sign-up' && styles.segmentButtonActive]} onPress={() => setAccountMode('sign-up')}>
+                <Text style={[styles.segmentButtonText, accountMode === 'sign-up' && styles.segmentButtonTextActive]}>注册</Text>
+              </Pressable>
+            </View>
+            <LabeledInput
+              label="用户名"
+              value={accountUsername}
+              onChangeText={setAccountUsername}
+              placeholder="例如 mard_01"
+              autoCapitalize="none"
+            />
+            <LabeledInput
+              label="密码"
+              value={accountPassword}
+              onChangeText={setAccountPassword}
+              placeholder="至少 6 位"
+              secureTextEntry
+              autoCapitalize="none"
+            />
+            {accountMode === 'sign-up' ? (
+              <LabeledInput
+                label="找回邮箱（可选）"
+                value={accountRecoveryEmail}
+                onChangeText={setAccountRecoveryEmail}
+                placeholder="只作为个人记录，当前版本不自动找回"
+                autoCapitalize="none"
+              />
+            ) : null}
+            <Text style={styles.helpText}>用户名支持 3-32 位小写字母、数字、下划线或短横线。注册前请在 Supabase Auth 里关闭邮箱确认。</Text>
+            <ActionButton label={accountMode === 'sign-up' ? '注册并登录' : '登录'} onPress={submitAccountForm} tone="amber" />
+          </>
+        ) : null}
+
+        {account.status === 'signed-in' ? (
+          <>
+            <View style={styles.accountSummary}>
+              <View style={styles.flex}>
+                <Text style={styles.codeText}>{account.profile?.username ?? '未命名账号'}</Text>
+                <Text style={styles.muted}>
+                  云端快照：{account.cloudUpdatedAt ? formatCloudTime(account.cloudUpdatedAt) : '暂无'}
+                  {account.lastSyncedAt ? ` · 本次同步 ${formatCloudTime(account.lastSyncedAt)}` : ''}
+                </Text>
+                <Text style={styles.helpText}>{account.autoSyncReady ? '后续修改会在本次登录期间自动同步。' : '云端已有数据时，需要先手动选择上传或恢复，避免误覆盖。'}</Text>
+              </View>
+            </View>
+            <View style={styles.buttonRow}>
+              <ActionButton label="刷新状态" onPress={() => void accountActions.refreshCloud()} tone="neutral" />
+              <ActionButton label="上传本机数据" onPress={() => void accountActions.uploadCloud()} tone="amber" />
+              <ActionButton label="从云端恢复" onPress={confirmCloudRestore} tone="neutral" />
+              <ActionButton label="退出登录" onPress={() => void accountActions.signOut()} tone="danger" />
+            </View>
+          </>
+        ) : null}
+
+        {account.busy || account.syncing ? <Text style={styles.muted}>{account.busy ? '账号操作处理中...' : '正在同步...'}</Text> : null}
+        {account.message && account.status !== 'loading' && account.status !== 'unconfigured' ? (
+          <Text style={account.message.includes('失败') || account.message.includes('配置') ? styles.warningText : styles.muted}>{account.message}</Text>
+        ) : null}
       </View>
 
       <View style={styles.panel}>
@@ -2394,6 +2845,12 @@ async function exportBackupFile(data: AppData) {
 }
 
 function formatHistoryTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatCloudTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -3267,6 +3724,54 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: -2,
     marginBottom: 10,
+  },
+  accountStatusPill: {
+    minHeight: 30,
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    backgroundColor: colors.blueSoft,
+    borderWidth: 1,
+    borderColor: '#B8CCF0',
+  },
+  accountStatusText: {
+    color: colors.blue,
+    fontWeight: '900',
+    fontSize: 12,
+  },
+  accountSummary: {
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panelTint,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
+  segmentedRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginVertical: 10,
+  },
+  segmentButton: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.panelTint,
+  },
+  segmentButtonActive: {
+    borderColor: colors.panelDark,
+    backgroundColor: colors.panelDark,
+  },
+  segmentButtonText: {
+    color: colors.muted,
+    fontWeight: '900',
+  },
+  segmentButtonTextActive: {
+    color: colors.white,
   },
   flex: {
     flex: 1,
