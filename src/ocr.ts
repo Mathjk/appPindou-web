@@ -443,15 +443,10 @@ function extractAdjacentRowPairs(lines: string[]) {
   for (let index = 0; index < lines.length - 1; index += 1) {
     const codes = extractCodeTokens(lines[index]);
     const currentLineQuantities = extractQuantityTokens(lines[index], true);
-    const nextLineCodes = extractCodeTokens(lines[index + 1]);
-    if (!codes.length || currentLineQuantities.length || nextLineCodes.length) continue;
+    if (!codes.length || currentLineQuantities.length) continue;
 
-    const quantities = extractQuantityTokens(lines[index + 1], true);
-    const canPair =
-      codes.length === quantities.length ||
-      (codes.length >= 2 && quantities.length >= 2 && Math.abs(codes.length - quantities.length) <= 2) ||
-      (codes.length === 1 && quantities.length === 1);
-    if (!canPair) continue;
+    const quantities = findQuantityRowForCodeRow(lines, index, codes.length);
+    if (!quantities.length) continue;
 
     const count = Math.min(codes.length, quantities.length);
     for (let pairIndex = 0; pairIndex < count; pairIndex += 1) {
@@ -464,6 +459,35 @@ function extractAdjacentRowPairs(lines: string[]) {
     }
   }
   return pairs;
+}
+
+function findQuantityRowForCodeRow(lines: string[], codeLineIndex: number, codeCount: number) {
+  const maxLookAhead = 3;
+  let standaloneFallback: Array<{ quantity: number; marked: boolean }> = [];
+
+  for (let offset = 1; offset <= maxLookAhead && codeLineIndex + offset < lines.length; offset += 1) {
+    const line = lines[codeLineIndex + offset];
+    const nextCodes = extractCodeTokens(line);
+    if (nextCodes.length) break;
+
+    const markedQuantities = extractQuantityTokens(line, false);
+    if (canPairLegendRows(codeCount, markedQuantities.length)) return markedQuantities;
+
+    const allQuantities = extractQuantityTokens(line, true);
+    if (!standaloneFallback.length && canPairLegendRows(codeCount, allQuantities.length)) {
+      standaloneFallback = allQuantities;
+    }
+  }
+
+  return standaloneFallback;
+}
+
+function canPairLegendRows(codeCount: number, quantityCount: number) {
+  return (
+    codeCount === quantityCount ||
+    (codeCount >= 2 && quantityCount >= 2 && Math.abs(codeCount - quantityCount) <= 2) ||
+    (codeCount === 1 && quantityCount === 1)
+  );
 }
 
 function extractSequentialTokenPairs(text: string) {

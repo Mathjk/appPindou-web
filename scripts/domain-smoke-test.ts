@@ -113,6 +113,36 @@ assert(legendRows.find((item) => item.code === 'F9')?.quantity === 148, 'OCR par
 assert(legendRows.find((item) => item.code === 'H6')?.quantity === 1147, 'OCR parser should keep code/quantity order across long legend rows');
 assert(legendRows.length === 17, 'OCR parser should parse all colors in the cropped legend');
 
+const multiLineLegendRows = parsePatternOcrText(
+  [
+    'E14 E15 F1 F14 F6 F7 F8 G2 H12 H3 H4 H5 H6',
+    'x132 x110 x5 x15 x55 x197 x363 x57 x133 x20 x241 x533 x151',
+    'H7 M12 M9',
+    'x462 x13 x13',
+  ].join('\n'),
+);
+assert(multiLineLegendRows.find((item) => item.code === 'E14')?.quantity === 132, 'multi-line legend should parse first code row');
+assert(multiLineLegendRows.find((item) => item.code === 'H6')?.quantity === 151, 'multi-line legend should parse end of first code row');
+assert(multiLineLegendRows.find((item) => item.code === 'H7')?.quantity === 462, 'multi-line legend should parse second code row');
+assert(multiLineLegendRows.find((item) => item.code === 'M12')?.quantity === 13, 'multi-line legend should parse second row middle code');
+assert(multiLineLegendRows.find((item) => item.code === 'M9')?.quantity === 13, 'multi-line legend should parse second row last code');
+assert(multiLineLegendRows.length === 16, 'multi-line legend should parse all rows without duplicates');
+
+const noisyMultiLineLegendRows = parsePatternOcrText(
+  [
+    'E14\tE15\tF1\tF14\tF6\tF7\tF8\tG2\tH12\tH3\tH4\tH5\tH6',
+    'X132\tx110\tx5\tx15\tx55\tX197\tx363\tx57\tx133\tx20\tx241\tx533\tx151',
+    '#E B408302\tTE BH0E302',
+    'H7\tM12\tM9',
+    'ME BH0:302\t#3 540:302',
+    'x462\tx13\tx13\t#E 8403302\t#E B40E30',
+  ].join('\n'),
+);
+assert(noisyMultiLineLegendRows.find((item) => item.code === 'H7')?.quantity === 462, 'noisy multi-line legend should skip watermark number rows');
+assert(noisyMultiLineLegendRows.find((item) => item.code === 'M12')?.quantity === 13, 'noisy multi-line legend should keep M12 quantity');
+assert(noisyMultiLineLegendRows.find((item) => item.code === 'M9')?.quantity === 13, 'noisy multi-line legend should keep M9 quantity');
+assert(noisyMultiLineLegendRows.length === 16, 'noisy multi-line legend should parse all real colors only');
+
 const positionedLegend = parsePositionedOcrResult({
   text: '',
   blocks: [

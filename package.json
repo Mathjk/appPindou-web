@@ -32,7 +32,8 @@
     "test:web": "python scripts/web-smoke-test.py",
     "test:crop": "python scripts/crop-interaction-test.py",
     "test:ocr-image": "python scripts/ocr-image-pipeline-test.py",
-    "test:ocr-storage": "python scripts/ocr-storage-quota-test.py"
+    "test:ocr-storage": "python scripts/ocr-storage-quota-test.py",
+    "test:ocr-multiline": "python scripts/ocr-multiline-legend-test.py"
   },
   "private": true
 }

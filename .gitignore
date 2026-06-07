@@ -41,6 +41,8 @@ yarn-error.*
 .tmp-smoke/
 .tmp-pages/
 .tmp-crop/
+.tmp-ocrtest/
+.tmp-ocrtest-input.ts
 __pycache__/
 
 # generated native folders
