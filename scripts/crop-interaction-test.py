@@ -4,7 +4,29 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8082")
-IMAGE_PATH = os.environ.get("CROP_TEST_IMAGE", "/home/jk/appPindou/temp/pdpng1.png")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TMP_DIR = REPO_ROOT / ".tmp-crop"
+
+
+def resolve_test_image(env_name, file_name):
+    explicit = os.environ.get(env_name)
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.extend(
+        [
+            REPO_ROOT / "test-fixtures" / file_name,
+            REPO_ROOT / "temp" / file_name,
+            REPO_ROOT.parent / "appPindou" / "temp" / file_name,
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Missing test image {file_name}. Set {env_name} or place it in test-fixtures/.")
+
+
+IMAGE_PATH = resolve_test_image("CROP_TEST_IMAGE", "pdpng1.png")
 
 
 def get_crop_rect(page):
@@ -89,9 +111,8 @@ def main():
         assert after_move["left"] > before_move["left"] + 20, f"Crop did not move right: {before_move} -> {after_move}"
         assert after_move["top"] > before_move["top"] + 12, f"Crop did not move down: {before_move} -> {after_move}"
 
-        screenshot_dir = Path("/home/jk/appPindou-web/.tmp-crop")
-        screenshot_dir.mkdir(exist_ok=True)
-        page.screenshot(path=str(screenshot_dir / "crop-interaction-check.png"), full_page=True)
+        TMP_DIR.mkdir(exist_ok=True)
+        page.screenshot(path=str(TMP_DIR / "crop-interaction-check.png"), full_page=True)
         browser.close()
         print("crop interaction tests passed")
 

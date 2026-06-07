@@ -4,14 +4,33 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8082")
-IMAGE_PATH = os.environ.get("OCR_STORAGE_TEST_IMAGE", "/home/jk/appPindou/temp/pdpng1.png")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 STORAGE_KEY = "appPindou:data:v1"
+
+
+def resolve_test_image(env_name, file_name):
+    explicit = os.environ.get(env_name)
+    candidates = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.extend(
+        [
+            REPO_ROOT / "test-fixtures" / file_name,
+            REPO_ROOT / "temp" / file_name,
+            REPO_ROOT.parent / "appPindou" / "temp" / file_name,
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Missing test image {file_name}. Set {env_name} or place it in test-fixtures/.")
+
+
+IMAGE_PATH = resolve_test_image("OCR_STORAGE_TEST_IMAGE", "pdpng1.png")
 
 
 def main():
     image = Path(IMAGE_PATH)
-    if not image.exists():
-        raise FileNotFoundError(f"Missing OCR storage test image: {image}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)

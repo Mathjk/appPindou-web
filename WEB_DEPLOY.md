@@ -1,6 +1,6 @@
 # appPindou Web 发布版
 
-这是从原生 app 工程复制出来的网页发布版。原始工程保留在 `/home/jk/appPindou`，本目录为 `/home/jk/appPindou-web`。
+这是从原生 app 工程拆出的网页发布版，可独立构建并发布到 GitHub Pages。
 
 ## 本地网页测试
 
@@ -18,7 +18,7 @@ http://localhost:8082
 手机访问本机网页时，需要让手机和电脑在同一个局域网，然后用电脑局域网 IP 访问，例如：
 
 ```text
-http://192.168.1.23:8082
+http://<computer-lan-ip>:8082
 ```
 
 如果只用 `localhost`，手机会把它理解为手机自己，不会访问到电脑。

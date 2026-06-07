@@ -2,29 +2,13 @@
 
 MARD 豆仓是一个用于管理 MARD 291 拼豆库存、图纸用量和采购清单的本地优先应用。当前仓库是网页发布版，基于 Expo / React Native / React Native Web 开发，并通过 GitHub Pages 发布。
 
-线上地址：
-
-```text
-https://mathjk.github.io/appPindou-web/
-```
-
-原始移动端工程仍保留在：
-
-```text
-/home/jk/appPindou
-```
-
-当前网页端工程位于：
-
-```text
-/home/jk/appPindou-web
-```
+部署到 GitHub Pages 后，可通过仓库对应的 Pages 地址访问。
 
 ## 当前定位
 
 - 先以网页端作为主要可测试版本，方便在电脑和手机浏览器里快速验证功能。
 - 数据默认只保存在当前浏览器本地，不依赖后端服务器。
-- 代码仍然保持 React Native 结构，大部分界面和业务逻辑可以迁移回 Android / iOS App。
+- 代码仍然保持 React Native 结构，大部分界面和业务逻辑可以复用于 Android / iOS App。
 - OCR 先走远程接口，默认使用 OCR.space 测试 Key；后续可以切换为更稳定的 OCR 或视觉模型接口。
 
 ## 核心功能
@@ -155,7 +139,7 @@ http://localhost:8082
 手机浏览器访问本机网页时，手机和电脑需要在同一个局域网，然后用电脑局域网 IP 访问，例如：
 
 ```text
-http://192.168.1.23:8082
+http://<computer-lan-ip>:8082
 ```
 
 如果手机和电脑不在同一个 Wi-Fi，可以使用 GitHub Pages 线上地址，或另外配置公网隧道。
@@ -187,18 +171,14 @@ npm run test:ocr-multiline
 如果要对线上 GitHub Pages 版本跑同一批测试：
 
 ```bash
-BASE_URL=https://mathjk.github.io/appPindou-web/ npm run test:web
-BASE_URL=https://mathjk.github.io/appPindou-web/ npm run test:crop
-BASE_URL=https://mathjk.github.io/appPindou-web/ npm run test:ocr-image
-BASE_URL=https://mathjk.github.io/appPindou-web/ npm run test:ocr-storage
-BASE_URL=https://mathjk.github.io/appPindou-web/ npm run test:ocr-multiline
+BASE_URL=https://<user>.github.io/<repo>/ npm run test:web
+BASE_URL=https://<user>.github.io/<repo>/ npm run test:crop
+BASE_URL=https://<user>.github.io/<repo>/ npm run test:ocr-image
+BASE_URL=https://<user>.github.io/<repo>/ npm run test:ocr-storage
+BASE_URL=https://<user>.github.io/<repo>/ npm run test:ocr-multiline
 ```
 
-部分 OCR 测试使用本地样例图片，默认路径在：
-
-```text
-/home/jk/appPindou/temp
-```
+部分 OCR 测试需要样例图片。可以通过 `CROP_TEST_IMAGE`、`OCR_PIPELINE_TEST_IMAGE`、`OCR_STORAGE_TEST_IMAGE`、`OCR_MULTILINE_TEST_IMAGE` 指定图片路径；也可以把样例图片放到仓库内 `test-fixtures/` 或 `temp/` 目录。
 
 ## 构建和发布
 
@@ -211,7 +191,7 @@ npm run build:web:local
 GitHub Pages 项目站点构建需要仓库名前缀：
 
 ```bash
-PUBLIC_URL=/appPindou-web/ npm run build:web
+PUBLIC_URL=/<repo>/ npm run build:web
 ```
 
 构建结果在：
@@ -248,31 +228,3 @@ src/types.ts            核心类型定义
 scripts/                Playwright 和领域测试脚本
 WEB_DEPLOY.md           GitHub Pages 部署流程说明
 ```
-
-## 移植回 App 端
-
-可以移植。当前网页端不是重新写的纯 Web 应用，而是 Expo / React Native 应用通过 React Native Web 跑在浏览器里，所以大部分设计和业务逻辑可以回到 Android / iOS。
-
-建议迁移方式：
-
-1. 以 `/home/jk/appPindou-web` 作为当前功能基线。
-2. 同步 `App.tsx`、`src/`、`package.json` 依赖和必要脚本到 `/home/jk/appPindou`。
-3. 保留移动端工程自己的 `android/`、`ios/`、签名、图标和构建配置。
-4. 重新运行 Expo prebuild 或原生构建。
-5. 在真机上重点验证图片选择、裁剪手势、OCR 请求、备份导入导出和本地存储。
-
-Android 可以继续生成 APK 安装测试。iPhone 不能像 Android APK 那样随便直接安装生产包，常见路径是：
-
-- 用 Expo Go 测开发版本。
-- 用 EAS / Xcode 生成 iOS build。
-- 通过 TestFlight 分发。
-- 或者继续用 GitHub Pages / PWA 方式在手机浏览器中使用。
-
-移动端迁移的主要风险点：
-
-- Web 裁剪框使用了浏览器 pointer 事件；原生端使用 `PanResponder`，需要真机确认拖动和四角缩放手感。
-- Web 端本地存储容量较小，所以已主动不持久化图片；原生端可以考虑把图片保存在文件系统中，再把文件 URI 写入数据。
-- OCR.space 是远程接口，Android / iOS 都需要网络权限和真实设备测试。
-- iOS 相册权限、文件导出和备份下载方式需要单独适配。
-
-结论：界面和核心逻辑可以复用，迁移不是重写；但移动端图片、文件、权限和手势需要做一轮专门真机测试。

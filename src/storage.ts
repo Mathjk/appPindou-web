@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
 import { createEmptyData, createPurchaseList } from './domain';
 import type { ActionHistoryEntry, AppData, AppDataSnapshot, InventoryEntry } from './types';
@@ -39,14 +40,19 @@ function prepareDataForStorage(data: AppData): AppData {
     ...data,
     // Project image data URLs can exceed localStorage quota on mobile browsers. The live
     // React state keeps them for preview/re-crop during the current session; persistent
-    // storage keeps the OCR result, editable bead counts, inventory, and purchase data.
-    projects: data.projects.map(stripProjectImageFields),
+    // web storage keeps the OCR result, editable bead counts, inventory, and purchase data.
+    // Native apps store file URIs instead of base64 data URLs, so keep image fields there.
+    projects: shouldStripProjectImagesForStorage() ? data.projects.map(stripProjectImageFields) : data.projects,
     actionHistory: data.actionHistory.map((entry) => ({
       ...entry,
       before: normalizeSnapshot(entry.before),
       after: normalizeSnapshot(entry.after),
     })),
   };
+}
+
+function shouldStripProjectImagesForStorage() {
+  return Platform.OS === 'web';
 }
 
 function isQuotaError(error: unknown) {
@@ -166,7 +172,7 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
     // Drop any image data URLs carried by legacy history snapshots so previously bloated
     // localStorage shrinks on next save (see stripProjectImages in domain.ts).
-    projects: Array.isArray(snapshot.projects) ? snapshot.projects.map(stripProjectImageFields) : [],
+    projects: Array.isArray(snapshot.projects) && shouldStripProjectImagesForStorage() ? snapshot.projects.map(stripProjectImageFields) : snapshot.projects ?? [],
     purchaseLists: Array.isArray(snapshot.purchaseLists) && snapshot.purchaseLists.length ? snapshot.purchaseLists : [createPurchaseList('默认采购表')],
   };
 }
