@@ -70,6 +70,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 
 const SEARCH_SERIES_ORDER = [...MARD_SERIES_ORDER].sort((left, right) => right.length - left.length);
 const NUMBER_PAD_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+const ENABLE_SEARCH_NUMBER_PAD = false;
 
 function normalizeSearchQuery(value: string) {
   return value.replace(/[a-z]/g, (letter) => letter.toUpperCase()).trimStart();
@@ -223,7 +224,7 @@ function InventoryScreen({
   const selectedPurchaseList = data.purchaseLists.find((list) => list.id === selectedPurchaseListId) ?? data.purchaseLists[0];
   const searchSeries = getSearchSeries(query);
   const compactInventory = viewport.width < 430;
-  const showSearchNumberPad = Platform.OS === 'web' && searchFocused && searchKeypadVisible && Boolean(searchSeries);
+  const showSearchNumberPad = ENABLE_SEARCH_NUMBER_PAD && Platform.OS === 'web' && searchFocused && searchKeypadVisible && Boolean(searchSeries);
 
   useEffect(() => {
     if (!selectedPurchaseListId || !data.purchaseLists.some((list) => list.id === selectedPurchaseListId)) {
@@ -254,7 +255,7 @@ function InventoryScreen({
     const inferredSeries = getSearchSeries(nextQuery);
     setQuery(nextQuery);
     setSeries(inferredSeries ?? 'ALL');
-    setSearchKeypadVisible(Boolean(inferredSeries));
+    setSearchKeypadVisible(ENABLE_SEARCH_NUMBER_PAD && Boolean(inferredSeries));
   };
 
   const selectSeries = (nextSeries: string) => {
@@ -459,7 +460,7 @@ function InventoryScreen({
             onChangeText={handleSearchChange}
             onFocus={() => {
               setSearchFocused(true);
-              if (searchSeries) setSearchKeypadVisible(true);
+              if (ENABLE_SEARCH_NUMBER_PAD && searchSeries) setSearchKeypadVisible(true);
             }}
             onBlur={() => {
               if (Platform.OS !== 'web') {
