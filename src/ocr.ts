@@ -4,10 +4,12 @@ import type { AppSettings, OcrDraftResult } from './types';
 type RecognizeOptions = {
   rawText?: string;
   settings?: AppSettings;
+  onProgress?: (progress: OcrProgress) => void;
 };
 
 type OcrPair = { code: string; quantity: number; confidence?: number; source?: string };
 type RefineOutcome = { status: 'skipped' | 'ready' | 'empty'; items: OcrPair[] };
+type OcrProgress = { stage: 'prepare' | 'vision' | 'text' | 'local' };
 type RecognitionFrame = { left: number; top: number; width: number; height: number };
 type TextRecognitionResult = {
   text: string;
@@ -102,11 +104,11 @@ const PALETTE_PROMPT = MARD_291_COLORS.map((color) => {
 export async function recognizePatternDraft(_imageUri: string, options: RecognizeOptions = {}): Promise<OcrDraftResult> {
   const rawText = options.rawText?.trim();
   if (rawText) return buildTextParserResult(rawText);
-  return recognizeWithRemoteAi(_imageUri, options.settings);
+  return recognizeWithRemoteAi(_imageUri, options);
 }
 
-async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): Promise<OcrDraftResult> {
-  const config = normalizeAiOcrSettings(settings);
+async function recognizeWithRemoteAi(imageUri: string, options: RecognizeOptions): Promise<OcrDraftResult> {
+  const config = normalizeAiOcrSettings(options.settings);
   if (!config.visionEndpoint || !config.visionApiKey) {
     return {
       status: 'failed',
@@ -117,9 +119,12 @@ async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): 
   }
 
   try {
+    options.onProgress?.({ stage: 'prepare' });
     const imageDataUrl = await imageUriToDataUrl(imageUri);
+    options.onProgress?.({ stage: 'vision' });
     const visionText = await callVisionRecognition(config, imageDataUrl);
 
+    options.onProgress?.(shouldRefineTextWithAi(config) ? { stage: 'text' } : { stage: 'local' });
     const localItems = parsePatternOcrText(visionText);
     let refineError = '';
     let refineOutcome: RefineOutcome = { status: 'skipped', items: [] };
@@ -195,6 +200,10 @@ function normalizeAiOcrSettings(settings?: AppSettings) {
     textModel: settings?.aiOcrTextModel.trim() || 'deepseek-v4-flash',
     textEnabled: settings?.aiOcrTextEnabled ?? true,
   };
+}
+
+function shouldRefineTextWithAi(config: ReturnType<typeof normalizeAiOcrSettings>) {
+  return Boolean(config.textEnabled && config.textApiKey && config.textEndpoint);
 }
 
 async function callVisionRecognition(config: ReturnType<typeof normalizeAiOcrSettings>, imageDataUrl: string) {

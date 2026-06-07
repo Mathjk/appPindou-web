@@ -62,6 +62,14 @@ type SettingsLeaveGuard = {
   saveChanges: () => void;
   discardChanges: () => void;
 };
+type OcrProgressStage = 'prepare' | 'vision' | 'text' | 'local';
+type OcrProgressState = {
+  stage: OcrProgressStage;
+  startedAt: number;
+  stageStartedAt: number;
+  elapsedSeconds: number;
+  stageElapsedSeconds: number;
+};
 type CropPixels = { originX: number; originY: number; width: number; height: number };
 type DisplayCropRect = { x: number; y: number; width: number; height: number };
 type CropGestureMode = 'move' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
@@ -430,6 +438,66 @@ function compactKeyMap(keyMap: Record<string, string>) {
     if (trimmed || key === 'ocr-space') next[key] = trimmed;
     return next;
   }, {});
+}
+
+function makeDatedName(prefix: string) {
+  return `${prefix} ${new Date().toLocaleDateString()}`;
+}
+
+function makeUniqueName(baseName: string, existingNames: string[]) {
+  const trimmedBase = baseName.trim();
+  const usedNames = new Set(existingNames.map((item) => item.trim()).filter(Boolean));
+  if (!usedNames.has(trimmedBase)) return trimmedBase;
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = `${trimmedBase}（${index}）`;
+    if (!usedNames.has(candidate)) return candidate;
+  }
+  return `${trimmedBase}（${Date.now().toString(36)}）`;
+}
+
+function getOcrStageTitle(stage: OcrProgressStage) {
+  switch (stage) {
+    case 'prepare':
+      return '准备识别图';
+    case 'vision':
+      return '图片 OCR 识别中';
+    case 'text':
+      return '文本 AI 整理中';
+    case 'local':
+      return '本地解析 OCR 文本';
+  }
+}
+
+function getOcrStageNotice(stage: OcrProgressStage) {
+  switch (stage) {
+    case 'prepare':
+      return '正在准备识别图...';
+    case 'vision':
+      return '图片 OCR 识别中...';
+    case 'text':
+      return '图片 OCR 已完成，正在调用文本 AI 整理...';
+    case 'local':
+      return '图片 OCR 已完成，正在用本地规则解析...';
+  }
+}
+
+function formatDuration(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return minutes ? `${minutes}分${seconds.toString().padStart(2, '0')}秒` : `${seconds}秒`;
+}
+
+function createOcrProgress(stage: OcrProgressStage, previous?: OcrProgressState): OcrProgressState {
+  const now = Date.now();
+  const startedAt = previous?.startedAt ?? now;
+  return {
+    stage,
+    startedAt,
+    stageStartedAt: now,
+    elapsedSeconds: Math.floor((now - startedAt) / 1000),
+    stageElapsedSeconds: 0,
+  };
 }
 
 function useResponsiveViewport() {
@@ -998,6 +1066,7 @@ function ProjectsScreen({
   const [cropBusy, setCropBusy] = useState(false);
   const [deductPreviewOpen, setDeductPreviewOpen] = useState(false);
   const [recognitionPreviewUri, setRecognitionPreviewUri] = useState<string | undefined>();
+  const [ocrProgress, setOcrProgress] = useState<OcrProgressState | undefined>();
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
   const rows = selectedProject ? buildRequirementRows(data, [selectedProject]) : [];
@@ -1005,10 +1074,32 @@ function ProjectsScreen({
   const deductCoveredTotal = rows.reduce((sum, row) => sum + Math.min(row.required, row.stock), 0);
   const deductMissingTotal = rows.reduce((sum, row) => sum + row.missing, 0);
 
+  useEffect(() => {
+    if (!ocrProgress) return;
+    const timer = setInterval(() => {
+      setOcrProgress((current) => {
+        if (!current) return current;
+        const now = Date.now();
+        return {
+          ...current,
+          elapsedSeconds: Math.floor((now - current.startedAt) / 1000),
+          stageElapsedSeconds: Math.floor((now - current.stageStartedAt) / 1000),
+        };
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [ocrProgress?.startedAt]);
+
   const saveProject = (project: PatternProject, label = `更新图纸：${project.name}`) => updateData((current) => upsertProject(current, project), label);
 
+  const updateOcrStage = (stage: OcrProgressStage) => {
+    setOcrProgress((current) => createOcrProgress(stage, current));
+    setNotice(getOcrStageNotice(stage));
+  };
+
   const addProject = () => {
-    const project = createProject(name);
+    const projectName = makeUniqueName(name.trim() || makeDatedName('新图纸'), data.projects.map((project) => project.name));
+    const project = createProject(projectName);
     updateData((current) => upsertProject(current, project), `新建图纸：${project.name}`);
     setSelectedId(project.id);
     setName('');
@@ -1095,8 +1186,7 @@ function ProjectsScreen({
       const ocrReady = await prepareCroppedImageForOcr(cropped.uri);
       const croppedImageUri = await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop');
       setPendingCropImageUri(undefined);
-      setNotice('已裁剪图纸，正在调用 OCR 识别...');
-      const ocrResult = await recognizePatternDraft(croppedImageUri, { settings: data.settings });
+      const ocrResult = await recognizePatternDraft(croppedImageUri, { settings: data.settings, onProgress: ({ stage }) => updateOcrStage(stage) });
       const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
       saveProject(
         {
@@ -1117,37 +1207,44 @@ function ProjectsScreen({
     } catch (error) {
       setNotice(`裁剪或 OCR 失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
+      setOcrProgress(undefined);
       setCropBusy(false);
     }
   };
 
   const recognizeCroppedPattern = async () => {
     if (!selectedProject) return;
+    if (ocrProgress) return;
     const imageUri = selectedProject.croppedImageUri ?? selectedProject.imageUri;
     if (!imageUri) {
       setNotice('请先上传并裁剪图纸图片');
       return;
     }
-    setNotice('正在调用 OCR 识别裁剪图...');
-    const ocrReady = await prepareCroppedImageForOcr(imageUri);
-    const finalImageUri = ocrReady.changed ? await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop') : imageUri;
-    const ocrResult = await recognizePatternDraft(finalImageUri, { settings: data.settings });
-    const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
-    saveProject(
-      {
-        ...selectedProject,
-        imageUri: finalImageUri,
-        croppedImageUri: finalImageUri,
-        ocrStatus: ocrResult.status,
-        ocrMessage: ocrResult.message,
-        ocrRawText: ocrResult.rawText,
-        ocrEngine: ocrResult.engine,
-        ocrUpdatedAt: new Date().toISOString(),
-        items,
-      },
-      `${selectedProject.name} OCR 识别`,
-    );
-    setNotice(ocrResult.message);
+    try {
+      const ocrReady = await prepareCroppedImageForOcr(imageUri);
+      const finalImageUri = ocrReady.changed ? await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop') : imageUri;
+      const ocrResult = await recognizePatternDraft(finalImageUri, { settings: data.settings, onProgress: ({ stage }) => updateOcrStage(stage) });
+      const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
+      saveProject(
+        {
+          ...selectedProject,
+          imageUri: finalImageUri,
+          croppedImageUri: finalImageUri,
+          ocrStatus: ocrResult.status,
+          ocrMessage: ocrResult.message,
+          ocrRawText: ocrResult.rawText,
+          ocrEngine: ocrResult.engine,
+          ocrUpdatedAt: new Date().toISOString(),
+          items,
+        },
+        `${selectedProject.name} OCR 识别`,
+      );
+      setNotice(ocrResult.message);
+    } catch (error) {
+      setNotice(`OCR 识别失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setOcrProgress(undefined);
+    }
   };
 
   const openRecognitionImage = () => {
@@ -1224,6 +1321,14 @@ function ProjectsScreen({
           {selectedProject.imageUri ? <Image source={{ uri: selectedProject.imageUri }} style={styles.patternImage} /> : null}
           {selectedProject.imageUri ? <Text style={styles.muted}>上方预览为 OCR 实际识别图；裁剪后会自动加白底留边，避免超宽图片被接口压缩。</Text> : null}
           <Text style={styles.muted}>{selectedProject.ocrMessage ?? '上传图片后会先裁剪，再把识别结果写入用量草稿。'}</Text>
+          {ocrProgress ? (
+            <View style={styles.ocrProgressPanel}>
+              <Text style={styles.ocrProgressTitle}>{getOcrStageTitle(ocrProgress.stage)}</Text>
+              <Text style={styles.ocrProgressText}>
+                总计 {formatDuration(ocrProgress.elapsedSeconds)} · 当前阶段 {formatDuration(ocrProgress.stageElapsedSeconds)}
+              </Text>
+            </View>
+          ) : null}
           <View style={styles.buttonRow}>
             <ActionButton label="上传并裁剪图纸" onPress={pickAndCropPatternImage} tone="neutral" />
             {selectedProject.originalImageUri ? <ActionButton label="重新裁剪原图" onPress={reopenCropFromOriginal} tone="neutral" /> : null}
@@ -1367,7 +1472,8 @@ function ShoppingScreen({
   }, [data.projects]);
 
   const createList = () => {
-    const list = createPurchaseList(newListName);
+    const listName = makeUniqueName(newListName.trim() || makeDatedName('采购表'), data.purchaseLists.map((list) => list.name));
+    const list = createPurchaseList(listName);
     updateData((current) => upsertPurchaseList(current, list), `新建采购表：${list.name}`);
     setSelectedListId(list.id);
     setNewListName('');
@@ -3506,6 +3612,26 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1,
     borderColor: colors.line,
+  },
+  ocrProgressPanel: {
+    marginTop: 10,
+    padding: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#B8CCF0',
+    backgroundColor: colors.blueSoft,
+  },
+  ocrProgressTitle: {
+    color: colors.blue,
+    fontWeight: '900',
+    fontSize: 14,
+  },
+  ocrProgressText: {
+    marginTop: 4,
+    color: colors.inkSoft,
+    fontFamily: fonts.mono,
+    fontSize: 12,
+    fontWeight: '800',
   },
   deductPreview: {
     marginTop: 12,
