@@ -7,6 +7,7 @@ type RecognizeOptions = {
 };
 
 type OcrPair = { code: string; quantity: number; confidence?: number; source?: string };
+type RefineOutcome = { status: 'skipped' | 'ready' | 'empty'; items: OcrPair[] };
 type RecognitionFrame = { left: number; top: number; width: number; height: number };
 type TextRecognitionResult = {
   text: string;
@@ -119,18 +120,21 @@ async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): 
 
     const localItems = parsePatternOcrText(visionText);
     let refineError = '';
-    let aiItems: OcrPair[] = [];
+    let refineOutcome: RefineOutcome = { status: 'skipped', items: [] };
     try {
-      aiItems = await refineOcrTextWithAi(visionText, config);
+      refineOutcome = await refineOcrTextWithAi(visionText, config);
     } catch (error) {
       refineError = error instanceof Error ? error.message : '未知错误';
     }
+    const aiItems = refineOutcome.items;
     const items = chooseBestParsedItems(aiItems, localItems);
+    const usedTextModel = items === aiItems && aiItems.length > 0;
+    const engine = `${config.visionModel} + ${refineOutcome.status === 'skipped' && !refineError ? '本地解析' : config.textModel}`;
 
     if (!items.length) {
       return {
         status: 'failed',
-        engine: `${config.visionModel} + ${config.textModel}`,
+        engine,
         rawText: visionText,
         message: refineError
           ? `OCR 已返回文本，但文本整理失败：${refineError}。请检查裁剪区域并手动校正。`
@@ -141,11 +145,9 @@ async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): 
 
     return {
       status: 'ready',
-      engine: `${config.visionModel} + ${config.textModel}`,
+      engine,
       rawText: visionText,
-      message: refineError
-        ? `OCR 已识别 ${items.length} 个颜色；文本整理失败，已使用本地解析结果。`
-        : `OCR 已识别 ${items.length} 个颜色，结果已写入用量草稿，可继续人工校正。`,
+      message: buildRecognitionMessage(items.length, config.textModel, refineOutcome.status, usedTextModel, refineError),
       items,
     };
   } catch (error) {
@@ -243,7 +245,7 @@ function getOcrSpaceEngine(model: string) {
 }
 
 async function refineOcrTextWithAi(rawText: string, config: ReturnType<typeof normalizeAiOcrSettings>) {
-  if (!config.textApiKey || !config.textEndpoint) return [];
+  if (!config.textApiKey || !config.textEndpoint) return { status: 'skipped', items: [] } satisfies RefineOutcome;
   const content = await callOpenAiCompatibleChat({
     endpoint: config.textEndpoint,
     apiKey: config.textApiKey,
@@ -254,7 +256,23 @@ async function refineOcrTextWithAi(rawText: string, config: ReturnType<typeof no
     ],
     maxTokens: 2200,
   });
-  return parseAiJsonItems(content);
+  const items = parseAiJsonItems(content);
+  return { status: items.length ? 'ready' : 'empty', items } satisfies RefineOutcome;
+}
+
+function buildRecognitionMessage(count: number, textModel: string, refineStatus: RefineOutcome['status'], usedTextModel: boolean, refineError: string) {
+  if (refineError) {
+    return `OCR 已识别 ${count} 个颜色；文本模型整理失败：${refineError}。已使用本地解析结果，可继续人工校正。`;
+  }
+  if (refineStatus === 'ready') {
+    return usedTextModel
+      ? `OCR 已识别 ${count} 个颜色；文本模型 ${textModel} 已参与整理，并采用文本模型结果。`
+      : `OCR 已识别 ${count} 个颜色；文本模型 ${textModel} 已参与整理，本地解析结果更完整，已采用本地结果。`;
+  }
+  if (refineStatus === 'empty') {
+    return `OCR 已识别 ${count} 个颜色；文本模型已调用但没有返回有效用量，已使用本地解析结果。`;
+  }
+  return `OCR 已识别 ${count} 个颜色；未填写文本 API Key，已使用本地解析结果。`;
 }
 
 async function callOpenAiCompatibleChat({
