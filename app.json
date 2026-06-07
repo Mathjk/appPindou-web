@@ -17,7 +17,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.jk.apppindou"
+      "package": "com.mardbeads.inventory"
     },
     "web": {
       "favicon": "./assets/favicon.png"
