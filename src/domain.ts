@@ -24,6 +24,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiOcrTextApiKey: '',
   aiOcrTextEndpoint: 'https://api.deepseek.com/chat/completions',
   aiOcrTextModel: 'deepseek-v4-flash',
+  aiOcrTextEnabled: true,
+  aiOcrProviderKeys: {},
+  aiOcrTextProviderKeys: {},
   aiOcrUseSameKey: false,
 };
 
@@ -151,8 +154,17 @@ function undoSettings(current: AppSettings, before: AppSettings, after: AppSetti
     aiOcrTextApiKey: current.aiOcrTextApiKey === after.aiOcrTextApiKey ? before.aiOcrTextApiKey : current.aiOcrTextApiKey,
     aiOcrTextEndpoint: current.aiOcrTextEndpoint === after.aiOcrTextEndpoint ? before.aiOcrTextEndpoint : current.aiOcrTextEndpoint,
     aiOcrTextModel: current.aiOcrTextModel === after.aiOcrTextModel ? before.aiOcrTextModel : current.aiOcrTextModel,
+    aiOcrTextEnabled: current.aiOcrTextEnabled === after.aiOcrTextEnabled ? before.aiOcrTextEnabled : current.aiOcrTextEnabled,
+    aiOcrProviderKeys: sameRecord(current.aiOcrProviderKeys, after.aiOcrProviderKeys) ? before.aiOcrProviderKeys : current.aiOcrProviderKeys,
+    aiOcrTextProviderKeys: sameRecord(current.aiOcrTextProviderKeys, after.aiOcrTextProviderKeys)
+      ? before.aiOcrTextProviderKeys
+      : current.aiOcrTextProviderKeys,
     aiOcrUseSameKey: current.aiOcrUseSameKey === after.aiOcrUseSameKey ? before.aiOcrUseSameKey : current.aiOcrUseSameKey,
   };
+}
+
+function sameRecord(left: Record<string, string>, right: Record<string, string>) {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
 }
 
 function undoInventory(

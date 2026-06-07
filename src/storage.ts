@@ -110,6 +110,8 @@ function redactSettings(settings: AppData['settings']) {
     ...settings,
     aiOcrApiKey: '',
     aiOcrTextApiKey: '',
+    aiOcrProviderKeys: {},
+    aiOcrTextProviderKeys: {},
   };
 }
 
@@ -143,6 +145,9 @@ function normalizeAppData(
       ...empty.settings,
       ...parsed.settings,
       inventoryPackSize,
+      aiOcrTextEnabled: parsed.settings?.aiOcrTextEnabled ?? empty.settings.aiOcrTextEnabled,
+      aiOcrProviderKeys: normalizeKeyMap(parsed.settings?.aiOcrProviderKeys),
+      aiOcrTextProviderKeys: normalizeKeyMap(parsed.settings?.aiOcrTextProviderKeys),
     },
     inventory: normalizeInventory(parsed.inventory),
     stockLogs,
@@ -150,6 +155,14 @@ function normalizeAppData(
     purchaseLists,
     actionHistory,
   };
+}
+
+function normalizeKeyMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.entries(value as Record<string, unknown>).reduce<Record<string, string>>((next, [key, apiKey]) => {
+    if (typeof apiKey === 'string') next[key] = apiKey;
+    return next;
+  }, {});
 }
 
 function normalizeActionHistory(entries: ActionHistoryEntry[]): ActionHistoryEntry[] {
@@ -167,7 +180,13 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
   const empty = createEmptyData();
   return {
     version: 1,
-    settings: { ...empty.settings, ...snapshot.settings },
+    settings: {
+      ...empty.settings,
+      ...snapshot.settings,
+      aiOcrTextEnabled: snapshot.settings?.aiOcrTextEnabled ?? empty.settings.aiOcrTextEnabled,
+      aiOcrProviderKeys: normalizeKeyMap(snapshot.settings?.aiOcrProviderKeys),
+      aiOcrTextProviderKeys: normalizeKeyMap(snapshot.settings?.aiOcrTextProviderKeys),
+    },
     inventory: normalizeInventory(snapshot.inventory),
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
     // Drop any image data URLs carried by legacy history snapshots so previously bloated

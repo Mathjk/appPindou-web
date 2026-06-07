@@ -52,11 +52,16 @@ import {
 } from './src/domain';
 import { recognizePatternDraft } from './src/ocr';
 import { exportAppData, loadAppData, parseImportedData, saveAppData } from './src/storage';
-import type { AppData, PatternProject, ProjectItem, PurchaseList } from './src/types';
+import type { AppData, AppSettings, PatternProject, ProjectItem, PurchaseList } from './src/types';
 
 type TabKey = 'inventory' | 'projects' | 'shopping' | 'settings';
 type UpdateData = (producer: (current: AppData) => AppData, label?: string, options?: { recordHistory?: boolean }) => string | undefined;
 type ShowNotice = (message: string) => void;
+type SettingsLeaveGuard = {
+  hasUnsavedChanges: () => boolean;
+  saveChanges: () => void;
+  discardChanges: () => void;
+};
 type CropPixels = { originX: number; originY: number; width: number; height: number };
 type DisplayCropRect = { x: number; y: number; width: number; height: number };
 type CropGestureMode = 'move' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
@@ -403,6 +408,30 @@ function findAiModelOption(preset: AiPreset | undefined, model: string) {
   return getAiModelOptions(preset).find((option) => option.model === model.trim());
 }
 
+function getAiServiceKey(preset: AiPreset | undefined, endpoint: string) {
+  const trimmedEndpoint = endpoint.trim();
+  return preset?.id ?? (trimmedEndpoint ? `custom:${trimmedEndpoint}` : 'custom');
+}
+
+function getStoredApiKey(keyMap: Record<string, string>, serviceKey: string, fallback = '') {
+  return Object.prototype.hasOwnProperty.call(keyMap, serviceKey) ? keyMap[serviceKey] : fallback;
+}
+
+function rememberApiKey(keyMap: Record<string, string>, serviceKey: string, apiKey: string) {
+  return {
+    ...keyMap,
+    [serviceKey]: apiKey,
+  };
+}
+
+function compactKeyMap(keyMap: Record<string, string>) {
+  return Object.entries(keyMap).reduce<Record<string, string>>((next, [key, value]) => {
+    const trimmed = value.trim();
+    if (trimmed || key === 'ocr-space') next[key] = trimmed;
+    return next;
+  }, {});
+}
+
 function useResponsiveViewport() {
   const viewport = useWindowDimensions();
   const [webViewportHeight, setWebViewportHeight] = useState(viewport.height);
@@ -445,7 +474,9 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState('');
   const [noticeUndoId, setNoticeUndoId] = useState<string | undefined>();
+  const [pendingSettingsTab, setPendingSettingsTab] = useState<TabKey | undefined>();
   const lastHistoryIdRef = useRef<string | undefined>(undefined);
+  const settingsLeaveGuardRef = useRef<SettingsLeaveGuard | undefined>(undefined);
 
   useEffect(() => {
     loadAppData()
@@ -468,6 +499,26 @@ export default function App() {
     setNotice(message);
     setNoticeUndoId(message ? lastHistoryIdRef.current : undefined);
     lastHistoryIdRef.current = undefined;
+  };
+
+  const requestTabChange = (nextTab: TabKey) => {
+    if (nextTab === tab) return;
+    if (tab === 'settings' && settingsLeaveGuardRef.current?.hasUnsavedChanges()) {
+      setPendingSettingsTab(nextTab);
+      return;
+    }
+    setTab(nextTab);
+  };
+
+  const completeSettingsNavigation = (mode: 'save' | 'discard') => {
+    const nextTab = pendingSettingsTab;
+    if (mode === 'save') {
+      settingsLeaveGuardRef.current?.saveChanges();
+    } else {
+      settingsLeaveGuardRef.current?.discardChanges();
+    }
+    setPendingSettingsTab(undefined);
+    if (nextTab) setTab(nextTab);
   };
 
   const updateData: UpdateData = (producer, label = '数据变更', options) => {
@@ -545,18 +596,61 @@ export default function App() {
           {tab === 'inventory' ? <InventoryScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
           {tab === 'projects' ? <ProjectsScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
           {tab === 'shopping' ? <ShoppingScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
-          {tab === 'settings' ? <SettingsScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
+          {tab === 'settings' ? (
+            <SettingsScreen
+              data={data}
+              updateData={updateData}
+              setNotice={showNotice}
+              registerLeaveGuard={(guard) => {
+                settingsLeaveGuardRef.current = guard;
+              }}
+            />
+          ) : null}
         </View>
 
         <View style={styles.tabbar}>
           {tabs.map((item) => (
-            <Pressable key={item.key} style={[styles.tab, tab === item.key && styles.tabActive]} onPress={() => setTab(item.key)}>
+            <Pressable key={item.key} style={[styles.tab, tab === item.key && styles.tabActive]} onPress={() => requestTabChange(item.key)}>
               <Text style={[styles.tabText, tab === item.key && styles.tabTextActive]}>{item.label}</Text>
             </Pressable>
           ))}
         </View>
+        <UnsavedSettingsPrompt
+          visible={Boolean(pendingSettingsTab)}
+          onSave={() => completeSettingsNavigation('save')}
+          onDiscard={() => completeSettingsNavigation('discard')}
+          onCancel={() => setPendingSettingsTab(undefined)}
+        />
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+function UnsavedSettingsPrompt({
+  visible,
+  onSave,
+  onDiscard,
+  onCancel,
+}: {
+  visible: boolean;
+  onSave: () => void;
+  onDiscard: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.promptBackdrop}>
+        <View style={styles.promptPanel}>
+          <Text style={styles.panelTitle}>设置尚未保存</Text>
+          <Text style={styles.muted}>离开设置页前，选择保存本次更改，或者放弃未保存内容。</Text>
+          <View style={styles.promptActions}>
+            <ActionButton label="继续编辑" onPress={onCancel} tone="neutral" />
+            <ActionButton label="不保存" onPress={onDiscard} tone="danger" />
+            <ActionButton label="保存" onPress={onSave} tone="amber" />
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -740,10 +834,10 @@ function InventoryScreen({
           contentContainerStyle={compactInventory ? styles.stickyPanelContentCompact : undefined}
         >
         <View style={[styles.selectedRow, searchMode && styles.selectedRowSearchMode]}>
-          <ColorSwatch color={selectedColor.hex} />
+          <ColorSwatch color={selectedColor.hex} compact />
           <View style={styles.flex}>
-            <Text style={styles.bigCode}>{selectedColor.code}</Text>
-            <Text style={styles.muted}>
+            <Text style={styles.selectedCodeText}>{selectedColor.code}</Text>
+            <Text style={[styles.muted, styles.selectedColorMeta]}>
               {selectedColor.nameZh || selectedColor.nameEn || '参考色名缺失'} · 当前库存 {selectedStock} 颗
             </Text>
           </View>
@@ -865,16 +959,16 @@ function InventoryScreen({
             const low = stock > 0 && stock <= threshold;
             return (
               <Pressable key={color.code} style={[styles.colorRow, selectedColor.code === color.code && styles.colorRowActive]} onPress={() => setSelectedCode(color.code)}>
-                <ColorSwatch color={color.hex} />
+                <ColorSwatch color={color.hex} compact />
                 <View style={styles.flex}>
-                  <Text style={styles.codeText}>{color.code}</Text>
-                  <Text style={styles.muted}>
+                  <Text style={styles.inventoryCodeText}>{color.code}</Text>
+                  <Text style={[styles.muted, styles.inventoryColorMeta]}>
                     {color.nameZh || color.nameEn || '参考色名缺失'}
                     {color.nameEn && color.nameEn !== color.code ? ` · ${color.nameEn}` : ''}
                   </Text>
                 </View>
                 <View style={styles.right}>
-                  <Text style={styles.quantity}>{stock}</Text>
+                  <Text style={styles.inventoryQuantity}>{stock}</Text>
                   <Text style={[styles.miniLabel, low && styles.lowText]}>{low ? '低库存' : '颗'}</Text>
                 </View>
               </Pressable>
@@ -903,6 +997,7 @@ function ProjectsScreen({
   const [pendingCropImageUri, setPendingCropImageUri] = useState<string | undefined>();
   const [cropBusy, setCropBusy] = useState(false);
   const [deductPreviewOpen, setDeductPreviewOpen] = useState(false);
+  const [recognitionPreviewUri, setRecognitionPreviewUri] = useState<string | undefined>();
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
   const rows = selectedProject ? buildRequirementRows(data, [selectedProject]) : [];
@@ -1061,11 +1156,7 @@ function ProjectsScreen({
       setNotice('还没有可查看的识别图');
       return;
     }
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      window.open(uri, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    setNotice('当前平台暂不支持直接打开识别图');
+    setRecognitionPreviewUri(uri);
   };
 
   const openDeductPreview = () => {
@@ -1233,6 +1324,7 @@ function ProjectsScreen({
         }}
         onConfirm={confirmCropAndRecognize}
       />
+      <RecognitionImagePreview uri={recognitionPreviewUri} onClose={() => setRecognitionPreviewUri(undefined)} />
     </>
   );
 }
@@ -1484,10 +1576,12 @@ function SettingsScreen({
   data,
   updateData,
   setNotice,
+  registerLeaveGuard,
 }: {
   data: AppData;
   updateData: UpdateData;
   setNotice: ShowNotice;
+  registerLeaveGuard: (guard: SettingsLeaveGuard | undefined) => void;
 }) {
   const [threshold, setThreshold] = useState(String(data.settings.defaultLowStockThreshold));
   const [aiOcrApiKey, setAiOcrApiKey] = useState(data.settings.aiOcrApiKey);
@@ -1496,6 +1590,9 @@ function SettingsScreen({
   const [aiOcrTextApiKey, setAiOcrTextApiKey] = useState(data.settings.aiOcrTextApiKey);
   const [aiOcrTextEndpoint, setAiOcrTextEndpoint] = useState(data.settings.aiOcrTextEndpoint);
   const [aiOcrTextModel, setAiOcrTextModel] = useState(data.settings.aiOcrTextModel);
+  const [aiOcrTextEnabled, setAiOcrTextEnabled] = useState(data.settings.aiOcrTextEnabled);
+  const [aiOcrProviderKeys, setAiOcrProviderKeys] = useState(data.settings.aiOcrProviderKeys);
+  const [aiOcrTextProviderKeys, setAiOcrTextProviderKeys] = useState(data.settings.aiOcrTextProviderKeys);
   const [visionProviderOpen, setVisionProviderOpen] = useState(false);
   const [visionModelOpen, setVisionModelOpen] = useState(false);
   const [textProviderOpen, setTextProviderOpen] = useState(false);
@@ -1506,6 +1603,65 @@ function SettingsScreen({
   const activeTextPreset = findAiPreset(TEXT_MODEL_PRESETS, aiOcrTextEndpoint, aiOcrTextModel);
   const activeVisionModel = findAiModelOption(activeVisionPreset, aiOcrModel);
   const activeTextModel = findAiModelOption(activeTextPreset, aiOcrTextModel);
+  const activeVisionServiceKey = getAiServiceKey(activeVisionPreset, aiOcrEndpoint);
+  const activeTextServiceKey = getAiServiceKey(activeTextPreset, aiOcrTextEndpoint);
+
+  const resetDraftFromSettings = (settings: AppSettings) => {
+    const visionPreset = findAiPreset(VISION_MODEL_PRESETS, settings.aiOcrEndpoint, settings.aiOcrModel);
+    const textPreset = findAiPreset(TEXT_MODEL_PRESETS, settings.aiOcrTextEndpoint, settings.aiOcrTextModel);
+    const visionServiceKey = getAiServiceKey(visionPreset, settings.aiOcrEndpoint);
+    const textServiceKey = getAiServiceKey(textPreset, settings.aiOcrTextEndpoint);
+    const visionKeys = rememberApiKey(settings.aiOcrProviderKeys ?? {}, visionServiceKey, settings.aiOcrApiKey || '');
+    const textKeys = rememberApiKey(settings.aiOcrTextProviderKeys ?? {}, textServiceKey, settings.aiOcrTextApiKey || '');
+
+    setThreshold(String(settings.defaultLowStockThreshold));
+    setAiOcrEndpoint(settings.aiOcrEndpoint || 'https://api.ocr.space/parse/image');
+    setAiOcrModel(settings.aiOcrModel || 'ocr.space-engine2');
+    setAiOcrTextEndpoint(settings.aiOcrTextEndpoint || 'https://api.deepseek.com/chat/completions');
+    setAiOcrTextModel(settings.aiOcrTextModel || 'deepseek-v4-flash');
+    setAiOcrTextEnabled(settings.aiOcrTextEnabled ?? true);
+    setAiOcrProviderKeys(visionKeys);
+    setAiOcrTextProviderKeys(textKeys);
+    setAiOcrApiKey(getStoredApiKey(visionKeys, visionServiceKey, settings.aiOcrApiKey || 'helloworld'));
+    setAiOcrTextApiKey(getStoredApiKey(textKeys, textServiceKey, settings.aiOcrTextApiKey || ''));
+  };
+
+  const buildDraftSettings = (): AppSettings => {
+    const nextVisionKeys = compactKeyMap(rememberApiKey(aiOcrProviderKeys, activeVisionServiceKey, aiOcrApiKey));
+    const nextTextKeys = compactKeyMap(rememberApiKey(aiOcrTextProviderKeys, activeTextServiceKey, aiOcrTextApiKey));
+    return {
+      ...data.settings,
+      defaultLowStockThreshold: parseWholeNumber(threshold),
+      aiOcrApiKey: aiOcrApiKey.trim(),
+      aiOcrEndpoint: aiOcrEndpoint.trim() || 'https://api.ocr.space/parse/image',
+      aiOcrModel: aiOcrModel.trim() || 'ocr.space-engine2',
+      aiOcrTextApiKey: aiOcrTextApiKey.trim(),
+      aiOcrTextEndpoint: aiOcrTextEndpoint.trim() || 'https://api.deepseek.com/chat/completions',
+      aiOcrTextModel: aiOcrTextModel.trim() || 'deepseek-v4-flash',
+      aiOcrTextEnabled,
+      aiOcrProviderKeys: nextVisionKeys,
+      aiOcrTextProviderKeys: nextTextKeys,
+      aiOcrUseSameKey: false,
+    };
+  };
+
+  const buildSavedSettings = () => {
+    const savedVisionPreset = findAiPreset(VISION_MODEL_PRESETS, data.settings.aiOcrEndpoint, data.settings.aiOcrModel);
+    const savedTextPreset = findAiPreset(TEXT_MODEL_PRESETS, data.settings.aiOcrTextEndpoint, data.settings.aiOcrTextModel);
+    const savedVisionKey = getAiServiceKey(savedVisionPreset, data.settings.aiOcrEndpoint);
+    const savedTextKey = getAiServiceKey(savedTextPreset, data.settings.aiOcrTextEndpoint);
+    return {
+      ...data.settings,
+      aiOcrTextEnabled: data.settings.aiOcrTextEnabled ?? true,
+      aiOcrProviderKeys: compactKeyMap(rememberApiKey(data.settings.aiOcrProviderKeys ?? {}, savedVisionKey, data.settings.aiOcrApiKey || '')),
+      aiOcrTextProviderKeys: compactKeyMap(
+        rememberApiKey(data.settings.aiOcrTextProviderKeys ?? {}, savedTextKey, data.settings.aiOcrTextApiKey || ''),
+      ),
+      aiOcrUseSameKey: false,
+    };
+  };
+
+  const hasUnsavedSettings = () => JSON.stringify(buildDraftSettings()) !== JSON.stringify(buildSavedSettings());
 
   useEffect(() => {
     if (resetCountdown <= 0) return;
@@ -1522,32 +1678,44 @@ function SettingsScreen({
   }, [resetCountdown]);
 
   useEffect(() => {
-    setThreshold(String(data.settings.defaultLowStockThreshold));
-    setAiOcrApiKey(data.settings.aiOcrApiKey || 'helloworld');
-    setAiOcrEndpoint(data.settings.aiOcrEndpoint || 'https://api.ocr.space/parse/image');
-    setAiOcrModel(data.settings.aiOcrModel || 'ocr.space-engine2');
-    setAiOcrTextApiKey(data.settings.aiOcrTextApiKey);
-    setAiOcrTextEndpoint(data.settings.aiOcrTextEndpoint);
-    setAiOcrTextModel(data.settings.aiOcrTextModel);
+    resetDraftFromSettings(data.settings);
   }, [data.settings]);
 
-  const saveSettings = () => {
-    const nextThreshold = parseWholeNumber(threshold);
+  const saveAllSettings = (notice = '设置已保存') => {
+    const nextSettings = buildDraftSettings();
     updateData(
       (current) => ({
         ...current,
         settings: {
           ...current.settings,
-          defaultLowStockThreshold: nextThreshold,
+          ...nextSettings,
         },
       }),
-      '修改默认低库存阈值',
+      '修改设置',
     );
-    setNotice('设置已保存');
+    setNotice(notice);
   };
 
+  const saveSettings = () => saveAllSettings('设置已保存');
+
+  useEffect(() => {
+    registerLeaveGuard({
+      hasUnsavedChanges: hasUnsavedSettings,
+      saveChanges: () => saveAllSettings('设置已保存'),
+      discardChanges: () => {
+        resetDraftFromSettings(data.settings);
+        setNotice('已放弃未保存设置');
+      },
+    });
+    return () => registerLeaveGuard(undefined);
+  });
+
   const applyVisionPreset = (preset: AiPreset) => {
+    const currentKeyMap = rememberApiKey(aiOcrProviderKeys, activeVisionServiceKey, aiOcrApiKey);
+    const nextServiceKey = getAiServiceKey(preset, preset.endpoint);
     const defaultModel = getAiModelOptions(preset)[0]?.model ?? preset.model;
+    setAiOcrProviderKeys(currentKeyMap);
+    setAiOcrApiKey(getStoredApiKey(currentKeyMap, nextServiceKey, preset.id === 'ocr-space' ? 'helloworld' : ''));
     setAiOcrEndpoint(preset.endpoint);
     setAiOcrModel(defaultModel);
     setVisionProviderOpen(false);
@@ -1563,7 +1731,11 @@ function SettingsScreen({
   };
 
   const applyTextPreset = (preset: AiPreset) => {
+    const currentKeyMap = rememberApiKey(aiOcrTextProviderKeys, activeTextServiceKey, aiOcrTextApiKey);
+    const nextServiceKey = getAiServiceKey(preset, preset.endpoint);
     const defaultModel = getAiModelOptions(preset)[0]?.model ?? preset.model;
+    setAiOcrTextProviderKeys(currentKeyMap);
+    setAiOcrTextApiKey(getStoredApiKey(currentKeyMap, nextServiceKey, ''));
     setAiOcrTextEndpoint(preset.endpoint);
     setAiOcrTextModel(defaultModel);
     setTextProviderOpen(false);
@@ -1578,25 +1750,17 @@ function SettingsScreen({
     setNotice(`已选择文本模型：${option.label}`);
   };
 
-  const saveAiOcrSettings = () => {
-    updateData(
-      (current) => ({
-        ...current,
-        settings: {
-          ...current.settings,
-          aiOcrApiKey: aiOcrApiKey.trim(),
-          aiOcrEndpoint: aiOcrEndpoint.trim() || 'https://api.ocr.space/parse/image',
-          aiOcrModel: aiOcrModel.trim() || 'ocr.space-engine2',
-          aiOcrTextApiKey: aiOcrTextApiKey.trim(),
-          aiOcrTextEndpoint: aiOcrTextEndpoint.trim() || 'https://api.deepseek.com/chat/completions',
-          aiOcrTextModel: aiOcrTextModel.trim() || 'deepseek-v4-flash',
-          aiOcrUseSameKey: false,
-        },
-      }),
-      '修改 OCR 接口设置',
-    );
-    setNotice('OCR 接口设置已保存');
+  const updateVisionApiKey = (value: string) => {
+    setAiOcrApiKey(value);
+    setAiOcrProviderKeys((current) => rememberApiKey(current, activeVisionServiceKey, value));
   };
+
+  const updateTextApiKey = (value: string) => {
+    setAiOcrTextApiKey(value);
+    setAiOcrTextProviderKeys((current) => rememberApiKey(current, activeTextServiceKey, value));
+  };
+
+  const saveAiOcrSettings = () => saveAllSettings('OCR 接口设置已保存');
 
   const copyBackup = async () => {
     await Clipboard.setStringAsync(exportAppData(data));
@@ -1687,7 +1851,7 @@ function SettingsScreen({
           onSelectModel={applyVisionModel}
         />
 
-        <LabeledInput label="OCR API Key" value={aiOcrApiKey} onChangeText={setAiOcrApiKey} placeholder="helloworld" secureTextEntry autoCapitalize="none" />
+        <LabeledInput label="OCR API Key" value={aiOcrApiKey} onChangeText={updateVisionApiKey} placeholder="helloworld" secureTextEntry autoCapitalize="none" />
         <LabeledInput
           label="OCR Endpoint"
           value={aiOcrEndpoint}
@@ -1698,6 +1862,16 @@ function SettingsScreen({
         <LabeledInput label="OCR 引擎/模型" value={aiOcrModel} onChangeText={setAiOcrModel} placeholder="ocr.space-engine2" autoCapitalize="none" />
 
         <View style={styles.divider} />
+
+        <Pressable style={styles.toggleRow} onPress={() => setAiOcrTextEnabled((enabled) => !enabled)}>
+          <View style={[styles.checkbox, aiOcrTextEnabled && styles.checkboxActive]}>
+            <Text style={styles.checkboxText}>{aiOcrTextEnabled ? '✓' : ''}</Text>
+          </View>
+          <View style={styles.flex}>
+            <Text style={styles.codeText}>启用文本模型整理</Text>
+            <Text style={styles.muted}>关闭后只使用 OCR 原文和本地规则解析，不调用文本模型。</Text>
+          </View>
+        </Pressable>
 
         <AiConfigSelector
           title="文本整理"
@@ -1721,7 +1895,7 @@ function SettingsScreen({
           onSelectModel={applyTextModel}
         />
 
-        <LabeledInput label="文本 API Key" value={aiOcrTextApiKey} onChangeText={setAiOcrTextApiKey} placeholder="sk-..." secureTextEntry autoCapitalize="none" />
+        <LabeledInput label="文本 API Key" value={aiOcrTextApiKey} onChangeText={updateTextApiKey} placeholder="sk-..." secureTextEntry autoCapitalize="none" />
         <LabeledInput
           label="文本 Endpoint"
           value={aiOcrTextEndpoint}
@@ -1756,7 +1930,7 @@ function SettingsScreen({
             {data.actionHistory.slice(0, 30).map((entry) => (
               <View key={entry.id} style={styles.historyRow}>
                 <View style={styles.flex}>
-                  <Text style={[styles.codeText, entry.undoneAt && styles.historyUndone]}>{entry.label}</Text>
+                  <Text style={[styles.historyLabel, entry.undoneAt && styles.historyUndone]}>{entry.label}</Text>
                   <Text style={styles.muted}>
                     {formatHistoryTime(entry.createdAt)}
                     {entry.undoneAt ? ` · 已恢复 ${formatHistoryTime(entry.undoneAt)}` : ''}
@@ -2026,6 +2200,22 @@ function RequirementLine({ row, showPacks = false }: { row: ReturnType<typeof bu
   );
 }
 
+function RecognitionImagePreview({ uri, onClose }: { uri?: string; onClose: () => void }) {
+  return (
+    <Modal visible={Boolean(uri)} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.imagePreviewBackdrop}>
+        <View style={styles.imagePreviewPanel}>
+          <View style={styles.cropTitleRow}>
+            <Text style={styles.panelTitle}>识别图</Text>
+            <ActionButton label="关闭" onPress={onClose} tone="neutral" />
+          </View>
+          {uri ? <Image source={{ uri }} style={styles.imagePreview} resizeMode="contain" /> : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function LabeledInput({
   label,
   value,
@@ -2096,7 +2286,7 @@ function AiConfigSelector({
     <View style={styles.aiSelector}>
       <Text style={styles.aiSectionTitle}>{title}</Text>
 
-      <Pressable style={styles.selectSummary} onPress={onToggleProvider}>
+      <Pressable style={[styles.selectSummary, providerOpen && styles.selectSummaryOpen]} onPress={onToggleProvider}>
         <View style={styles.flex}>
           <Text style={styles.selectLabel}>{providerLabel}</Text>
           <Text style={styles.selectValue}>{selectedPreset?.title ?? '自定义接口'}</Text>
@@ -2121,7 +2311,7 @@ function AiConfigSelector({
         </View>
       ) : null}
 
-      <Pressable style={styles.selectSummary} onPress={onToggleModel}>
+      <Pressable style={[styles.selectSummary, modelOpen && styles.selectSummaryOpen]} onPress={onToggleModel}>
         <View style={styles.flex}>
           <Text style={styles.selectLabel}>{modelLabel}</Text>
           <Text style={styles.selectValue}>{selectedModel?.label ?? (customModel || '自定义模型')}</Text>
@@ -2196,11 +2386,11 @@ function RoundActionButton({
   );
 }
 
-function ColorSwatch({ color }: { color: string }) {
+function ColorSwatch({ color, compact = false }: { color: string; compact?: boolean }) {
   return (
-    <View style={styles.swatchFrame}>
-      <View style={[styles.swatch, { backgroundColor: color }]}>
-        <View style={styles.swatchHighlight} />
+    <View style={[styles.swatchFrame, compact && styles.swatchFrameCompact]}>
+      <View style={[styles.swatch, compact && styles.swatchCompact, { backgroundColor: color }]}>
+        <View style={[styles.swatchHighlight, compact && styles.swatchHighlightCompact]} />
       </View>
     </View>
   );
@@ -2866,11 +3056,22 @@ const styles = StyleSheet.create({
   selectedRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginBottom: 8,
+    gap: 8,
+    marginBottom: 6,
   },
   selectedRowSearchMode: {
     marginBottom: 0,
+  },
+  selectedCodeText: {
+    fontFamily: fonts.mono,
+    fontSize: 21,
+    fontWeight: '900',
+    color: colors.ink,
+    letterSpacing: 0,
+  },
+  selectedColorMeta: {
+    fontSize: 12,
+    lineHeight: 17,
   },
   bigCode: {
     fontFamily: fonts.mono,
@@ -2889,6 +3090,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.lineStrong,
   },
+  swatchFrameCompact: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+  },
   swatch: {
     width: 26,
     height: 26,
@@ -2897,6 +3103,11 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(23, 26, 33, 0.2)',
     overflow: 'hidden',
   },
+  swatchCompact: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+  },
   swatchHighlight: {
     width: 8,
     height: 8,
@@ -2904,6 +3115,13 @@ const styles = StyleSheet.create({
     marginLeft: 5,
     marginTop: 4,
     backgroundColor: 'rgba(255, 255, 255, 0.48)',
+  },
+  swatchHighlightCompact: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    marginLeft: 4,
+    marginTop: 3,
   },
   inputGrid: {
     flexDirection: 'row',
@@ -3176,14 +3394,15 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   list: {
-    gap: 7,
+    gap: 5,
     paddingBottom: 24,
   },
   colorRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 10,
+    gap: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
     backgroundColor: colors.panel,
     borderRadius: 8,
     borderWidth: 1,
@@ -3200,6 +3419,17 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0,
   },
+  inventoryCodeText: {
+    fontFamily: fonts.mono,
+    fontSize: 14,
+    color: colors.ink,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  inventoryColorMeta: {
+    fontSize: 12,
+    lineHeight: 17,
+  },
   right: {
     alignItems: 'flex-end',
     minWidth: 56,
@@ -3208,6 +3438,12 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontWeight: '900',
     fontSize: 18,
+    fontFamily: fonts.mono,
+  },
+  inventoryQuantity: {
+    color: colors.ink,
+    fontWeight: '900',
+    fontSize: 16,
     fontFamily: fonts.mono,
   },
   miniLabel: {
@@ -3291,6 +3527,56 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderBottomWidth: 1,
     borderBottomColor: '#E8C985',
+  },
+  promptBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(18, 22, 32, 0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 18,
+  },
+  promptPanel: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.panel,
+    padding: 14,
+    gap: 10,
+  },
+  promptActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 4,
+  },
+  imagePreviewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(18, 22, 32, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+  },
+  imagePreviewPanel: {
+    width: '100%',
+    maxWidth: 760,
+    height: '88%',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.panel,
+    padding: 10,
+    gap: 10,
+  },
+  imagePreview: {
+    flex: 1,
+    width: '100%',
+    borderRadius: 8,
+    backgroundColor: colors.bgAlt,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   cropModalBackdrop: {
     flex: 1,
@@ -3467,6 +3753,17 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '900',
   },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panelTint,
+    marginBottom: 10,
+  },
   aiSelector: {
     gap: 8,
     marginBottom: 10,
@@ -3481,6 +3778,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  selectSummaryOpen: {
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft,
   },
   selectLabel: {
     color: colors.inkSoft,
@@ -3506,14 +3807,19 @@ const styles = StyleSheet.create({
   },
   optionList: {
     gap: 8,
-    marginBottom: 2,
+    marginBottom: 4,
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#B8CCF0',
+    backgroundColor: '#EEF4FF',
   },
   optionRow: {
     padding: 11,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.panelTint,
+    borderColor: '#C8D7F1',
+    backgroundColor: colors.white,
     gap: 6,
   },
   optionRowActive: {
@@ -3642,6 +3948,13 @@ const styles = StyleSheet.create({
   historyActions: {
     flexDirection: 'row',
     gap: 6,
+  },
+  historyLabel: {
+    color: colors.ink,
+    fontFamily: fonts.text,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 17,
   },
   smallAction: {
     paddingHorizontal: 9,

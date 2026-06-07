@@ -149,7 +149,7 @@ async function recognizeWithRemoteAi(imageUri: string, settings?: AppSettings): 
       status: 'ready',
       engine,
       rawText: visionText,
-      message: buildRecognitionMessage(items.length, config.textModel, refineOutcome.status, usedTextModel, refineError),
+      message: buildRecognitionMessage(items.length, config.textModel, config.textEnabled, refineOutcome.status, usedTextModel, refineError),
       items,
     };
   } catch (error) {
@@ -193,6 +193,7 @@ function normalizeAiOcrSettings(settings?: AppSettings) {
     textApiKey: settings?.aiOcrTextApiKey?.trim() ?? '',
     textEndpoint: settings?.aiOcrTextEndpoint.trim() || DEFAULT_TEXT_ENDPOINT,
     textModel: settings?.aiOcrTextModel.trim() || 'deepseek-v4-flash',
+    textEnabled: settings?.aiOcrTextEnabled ?? true,
   };
 }
 
@@ -429,6 +430,7 @@ async function callCloudflareVision({ endpoint, apiKey, imageDataUrl }: { endpoi
 }
 
 async function refineOcrTextWithAi(rawText: string, config: ReturnType<typeof normalizeAiOcrSettings>) {
+  if (!config.textEnabled) return { status: 'skipped', items: [] } satisfies RefineOutcome;
   if (!config.textApiKey || !config.textEndpoint) return { status: 'skipped', items: [] } satisfies RefineOutcome;
   const content = isAnthropicEndpoint(config.textEndpoint, config.textModel)
     ? await callAnthropicMessages({
@@ -453,7 +455,7 @@ async function refineOcrTextWithAi(rawText: string, config: ReturnType<typeof no
   return { status: items.length ? 'ready' : 'empty', items } satisfies RefineOutcome;
 }
 
-function buildRecognitionMessage(count: number, textModel: string, refineStatus: RefineOutcome['status'], usedTextModel: boolean, refineError: string) {
+function buildRecognitionMessage(count: number, textModel: string, textEnabled: boolean, refineStatus: RefineOutcome['status'], usedTextModel: boolean, refineError: string) {
   if (refineError) {
     return `OCR 已识别 ${count} 个颜色；文本模型整理失败：${refineError}。已使用本地解析结果，可继续人工校正。`;
   }
@@ -464,6 +466,9 @@ function buildRecognitionMessage(count: number, textModel: string, refineStatus:
   }
   if (refineStatus === 'empty') {
     return `OCR 已识别 ${count} 个颜色；文本模型已调用但没有返回有效用量，已使用本地解析结果。`;
+  }
+  if (!textEnabled) {
+    return `OCR 已识别 ${count} 个颜色；文本模型已关闭，已使用本地解析结果。`;
   }
   return `OCR 已识别 ${count} 个颜色；未填写文本 API Key，已使用本地解析结果。`;
 }

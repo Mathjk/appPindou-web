@@ -69,6 +69,9 @@ export type AppSettings = {
   aiOcrTextApiKey: string;
   aiOcrTextEndpoint: string;
   aiOcrTextModel: string;
+  aiOcrTextEnabled: boolean;
+  aiOcrProviderKeys: Record<string, string>;
+  aiOcrTextProviderKeys: Record<string, string>;
   aiOcrUseSameKey: boolean;
 };
 
