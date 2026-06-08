@@ -121,14 +121,9 @@ G9×1
 
 ## Supabase 账号同步设置
 
-当前前端使用以下公开配置：
+前端需要 Supabase Project URL 和 publishable key 初始化客户端。publishable key 设计上可以出现在网页源码、移动端包和 GitHub Pages 这类公开环境里；安全性依赖 Supabase Auth 和 RLS。当前部署值在 `src/account.ts` 中配置。
 
-```text
-Project URL: https://bjgxzxblwzwdsdgxznps.supabase.co
-Publishable key: sb_publishable_3lyN7_8dXPQvVgRk51ymyA_G1U6_dQZ
-```
-
-这类 publishable key 会出现在网页源码里，安全性依赖 Supabase RLS。不要把 `service_role` 或 `sb_secret_...` 放进前端或 GitHub Pages。
+不要把 `service_role`、`sb_secret_...`、数据库密码或其他后端密钥放进前端、README 或 GitHub Pages。
 
 Supabase 项目需要先完成：
 

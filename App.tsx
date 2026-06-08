@@ -1396,6 +1396,7 @@ function ProjectsScreen({
   const [ocrProgress, setOcrProgress] = useState<OcrProgressState | undefined>();
   const [editingProjectName, setEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
+  const projectNameCommitGuardRef = useRef(false);
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
   const rows = selectedProject ? buildRequirementRows(data, [selectedProject]) : [];
@@ -1424,6 +1425,7 @@ function ProjectsScreen({
   useEffect(() => {
     setEditingProjectName(false);
     setProjectNameDraft(selectedProject?.name ?? '');
+    projectNameCommitGuardRef.current = false;
   }, [selectedProject?.id]);
 
   const startProjectNameEdit = (project = selectedProject) => {
@@ -1434,10 +1436,17 @@ function ProjectsScreen({
   };
 
   const saveProjectName = () => {
+    if (projectNameCommitGuardRef.current) return;
+    projectNameCommitGuardRef.current = true;
+    setTimeout(() => {
+      projectNameCommitGuardRef.current = false;
+    }, 250);
     if (!selectedProject) return;
     const trimmed = projectNameDraft.trim();
     if (!trimmed) {
-      setNotice('图纸名称不能为空');
+      setProjectNameDraft(selectedProject.name);
+      setEditingProjectName(false);
+      setNotice('图纸名称不能为空，已保留原名称');
       return;
     }
     const nextName = makeUniqueName(
@@ -1674,12 +1683,9 @@ function ProjectsScreen({
                     onChangeText={setProjectNameDraft}
                     accessibilityLabel="编辑图纸名称输入"
                     autoFocus
+                    onBlur={saveProjectName}
                     onSubmitEditing={saveProjectName}
                   />
-                  <View style={styles.nameEditActions}>
-                    <ActionButton label="保存" onPress={saveProjectName} tone="amber" />
-                    <ActionButton label="取消" onPress={() => setEditingProjectName(false)} tone="neutral" />
-                  </View>
                 </View>
               ) : (
                 <Pressable accessibilityLabel="重命名当前图纸" onPress={() => startProjectNameEdit()}>
@@ -1833,6 +1839,7 @@ function ShoppingScreen({
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>(data.projects.map((project) => project.id));
   const [editingListName, setEditingListName] = useState(false);
   const [listNameDraft, setListNameDraft] = useState('');
+  const listNameCommitGuardRef = useRef(false);
 
   const selectedList = data.purchaseLists.find((list) => list.id === selectedListId) ?? data.purchaseLists[0];
   const purchaseRows = selectedList ? buildPurchaseRows(selectedList) : [];
@@ -1859,6 +1866,7 @@ function ShoppingScreen({
   useEffect(() => {
     setEditingListName(false);
     setListNameDraft(selectedList?.name ?? '');
+    listNameCommitGuardRef.current = false;
   }, [selectedList?.id]);
 
   const createList = () => {
@@ -1889,10 +1897,17 @@ function ShoppingScreen({
   };
 
   const saveListName = () => {
+    if (listNameCommitGuardRef.current) return;
+    listNameCommitGuardRef.current = true;
+    setTimeout(() => {
+      listNameCommitGuardRef.current = false;
+    }, 250);
     if (!selectedList) return;
     const trimmed = listNameDraft.trim();
     if (!trimmed) {
-      setNotice('采购表名称不能为空');
+      setListNameDraft(selectedList.name);
+      setEditingListName(false);
+      setNotice('采购表名称不能为空，已保留原名称');
       return;
     }
     const nextName = makeUniqueName(
@@ -1980,12 +1995,9 @@ function ShoppingScreen({
                       onChangeText={setListNameDraft}
                       accessibilityLabel="编辑采购表名称输入"
                       autoFocus
+                      onBlur={saveListName}
                       onSubmitEditing={saveListName}
                     />
-                    <View style={styles.nameEditActions}>
-                      <ActionButton label="保存" onPress={saveListName} tone="amber" />
-                      <ActionButton label="取消" onPress={() => setEditingListName(false)} tone="neutral" />
-                    </View>
                   </View>
                 ) : (
                   <Pressable accessibilityLabel="重命名当前采购表" onPress={() => startListNameEdit()}>
@@ -3937,11 +3949,6 @@ const styles = StyleSheet.create({
   },
   nameEditInput: {
     minWidth: 180,
-  },
-  nameEditActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
   },
   qtyInput: {
     width: 84,
