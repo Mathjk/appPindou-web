@@ -67,7 +67,7 @@ import {
   upsertProject,
 } from './src/domain';
 import { recognizePatternDraft } from './src/ocr';
-import { exportAppData, loadAppData, parseImportedData, saveAppData } from './src/storage';
+import { exportAppData, loadAppData, parseImportedData, prepareAppDataForPersistence, saveAppData } from './src/storage';
 import type { AccountProfile } from './src/account';
 import type { AppData, AppSettings, PatternProject, ProjectItem, PurchaseList } from './src/types';
 
@@ -91,6 +91,8 @@ type AccountPanelState = {
   cloudSummary?: AppDataSummary;
   lastCloudCheckedAt?: string;
   lastSyncedAt?: string;
+  pendingCloudSync: boolean;
+  nextAutoSyncAt?: string;
   autoSyncReady: boolean;
 };
 type AccountActions = {
@@ -126,6 +128,14 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: 'projects', label: '图纸' },
   { key: 'shopping', label: '采购' },
   { key: 'settings', label: '设置' },
+];
+
+const CLOUD_SYNC_INTERVAL_OPTIONS = [
+  { minutes: 0, label: '关闭' },
+  { minutes: 5, label: '5 分钟' },
+  { minutes: 15, label: '15 分钟' },
+  { minutes: 30, label: '30 分钟' },
+  { minutes: 60, label: '60 分钟' },
 ];
 
 const SEARCH_SERIES_ORDER = [...MARD_SERIES_ORDER].sort((left, right) => right.length - left.length);
@@ -551,6 +561,19 @@ function formatDataSummary(summary: AppDataSummary) {
   return `库存 ${summary.stockedColors} 色/${summary.totalStock} 颗 · 图纸 ${summary.projects} 份/${summary.projectItems} 项 · 采购 ${summary.purchaseLists} 表/${summary.purchaseItems} 项`;
 }
 
+function normalizeCloudSyncIntervalMinutes(value: unknown) {
+  const minutes = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 5;
+  return CLOUD_SYNC_INTERVAL_OPTIONS.some((option) => option.minutes === minutes) ? minutes : 5;
+}
+
+function getCloudSyncIntervalMs(minutes: number) {
+  return normalizeCloudSyncIntervalMinutes(minutes) * 60 * 1000;
+}
+
+function createCloudSyncSignature(data: AppData) {
+  return JSON.stringify(prepareAppDataForPersistence(data));
+}
+
 function createOcrProgress(stage: OcrProgressStage, previous?: OcrProgressState): OcrProgressState {
   const now = Date.now();
   const startedAt = previous?.startedAt ?? now;
@@ -610,6 +633,7 @@ export default function App() {
     status: isSupabaseConfigured ? 'loading' : 'unconfigured',
     busy: false,
     syncing: false,
+    pendingCloudSync: false,
     autoSyncReady: false,
     message: isSupabaseConfigured ? '正在检查登录状态...' : 'Supabase 尚未配置',
   }));
@@ -617,6 +641,8 @@ export default function App() {
   const settingsLeaveGuardRef = useRef<SettingsLeaveGuard | undefined>(undefined);
   const dataRef = useRef<AppData | null>(null);
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lastCloudSyncSignatureRef = useRef<string | undefined>(undefined);
+  const pendingCloudSyncRef = useRef(false);
 
   useEffect(() => {
     dataRef.current = data;
@@ -627,11 +653,17 @@ export default function App() {
     message?: string,
     options?: { keepAutoSync?: boolean },
   ) => {
+    if (!options?.keepAutoSync) {
+      clearAutoSyncTimer();
+      lastCloudSyncSignatureRef.current = undefined;
+      pendingCloudSyncRef.current = false;
+    }
     if (!isSupabaseConfigured) {
       setAccount({
         status: 'unconfigured',
         busy: false,
         syncing: false,
+        pendingCloudSync: false,
         autoSyncReady: false,
         message: 'Supabase 尚未配置',
       });
@@ -642,6 +674,7 @@ export default function App() {
         status: 'signed-out',
         busy: false,
         syncing: false,
+        pendingCloudSync: false,
         autoSyncReady: false,
         message: message ?? '未登录，当前仍使用本地数据',
       });
@@ -655,6 +688,8 @@ export default function App() {
       busy: false,
       syncing: false,
       message: message ?? current.message,
+      pendingCloudSync: options?.keepAutoSync ? current.pendingCloudSync : false,
+      nextAutoSyncAt: options?.keepAutoSync ? current.nextAutoSyncAt : undefined,
       autoSyncReady: options?.keepAutoSync ? current.autoSyncReady : false,
     }));
 
@@ -677,6 +712,8 @@ export default function App() {
         busy: false,
         syncing: false,
         message: message ?? (cloudMeta ? '已登录，云端已有数据，可选择恢复或上传覆盖' : '已登录，云端还没有快照'),
+        pendingCloudSync: options?.keepAutoSync ? current.pendingCloudSync : false,
+        nextAutoSyncAt: options?.keepAutoSync ? current.nextAutoSyncAt : undefined,
         autoSyncReady: options?.keepAutoSync ? current.autoSyncReady : false,
       }));
     } catch (error) {
@@ -686,6 +723,7 @@ export default function App() {
         userId: session.user.id,
         busy: false,
         syncing: false,
+        pendingCloudSync: current.pendingCloudSync,
         message: accountErrorMessage(error),
       }));
     }
@@ -734,36 +772,108 @@ export default function App() {
     }
   }, [data, loaded]);
 
+  const clearAutoSyncTimer = () => {
+    if (autoSyncTimerRef.current) {
+      clearTimeout(autoSyncTimerRef.current);
+      autoSyncTimerRef.current = undefined;
+    }
+  };
+
+  const syncCurrentDataToCloud = async (mode: 'auto' | 'manual' | 'logout') => {
+    const currentData = dataRef.current;
+    if (!currentData) {
+      setAccount((current) => ({ ...current, busy: false, syncing: false, message: '没有可同步的数据' }));
+      return false;
+    }
+
+    clearAutoSyncTimer();
+    const syncingMessage = mode === 'logout' ? '退出前正在同步到云端...' : mode === 'auto' ? '正在自动同步到云端...' : '正在上传本机数据到云端...';
+    setAccount((current) => ({
+      ...current,
+      busy: mode !== 'auto',
+      syncing: true,
+      message: syncingMessage,
+    }));
+
+    try {
+      const meta = await saveCloudSnapshot(currentData);
+      const syncedAt = new Date().toISOString();
+      const summary = summarizeAppData(currentData);
+      lastCloudSyncSignatureRef.current = createCloudSyncSignature(currentData);
+      pendingCloudSyncRef.current = false;
+      setAccount((current) => ({
+        ...current,
+        busy: false,
+        syncing: false,
+        pendingCloudSync: false,
+        nextAutoSyncAt: undefined,
+        autoSyncReady: true,
+        cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? syncedAt,
+        cloudSummary: summary,
+        lastCloudCheckedAt: syncedAt,
+        lastSyncedAt: syncedAt,
+        message: mode === 'logout' ? '退出前已同步到云端' : mode === 'auto' ? '已自动同步到云端' : '已上传本机数据，并开启本次自动同步',
+      }));
+      if (mode === 'manual') setNotice('本机数据已上传到云端');
+      return true;
+    } catch (error) {
+      const message = accountErrorMessage(error);
+      setAccount((current) => ({
+        ...current,
+        busy: false,
+        syncing: false,
+        message,
+      }));
+      setNotice(message);
+      return false;
+    }
+  };
+
   useEffect(() => {
     if (!loaded || !data || account.status !== 'signed-in' || !account.autoSyncReady) return;
-    if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+    const currentSignature = createCloudSyncSignature(data);
+    if (lastCloudSyncSignatureRef.current === currentSignature) {
+      if (pendingCloudSyncRef.current || account.pendingCloudSync) {
+        pendingCloudSyncRef.current = false;
+        setAccount((current) => ({ ...current, pendingCloudSync: false, nextAutoSyncAt: undefined }));
+      }
+      return;
+    }
+
+    pendingCloudSyncRef.current = true;
+    const intervalMs = getCloudSyncIntervalMs(data.settings.cloudAutoSyncIntervalMinutes);
+    const nextAutoSyncAt = intervalMs > 0 ? new Date(Date.now() + intervalMs).toISOString() : undefined;
+    clearAutoSyncTimer();
+    setAccount((current) => ({
+      ...current,
+      pendingCloudSync: true,
+      nextAutoSyncAt,
+      message: intervalMs > 0 ? `本机有未同步更改，将在 ${formatCloudTime(nextAutoSyncAt ?? '')} 自动同步` : '本机有未同步更改，自动同步已关闭',
+    }));
+    if (!intervalMs) return;
+
     autoSyncTimerRef.current = setTimeout(() => {
-      const currentData = dataRef.current;
-      if (!currentData) return;
-      setAccount((current) => ({ ...current, syncing: true, message: '正在自动同步到云端...' }));
-      saveCloudSnapshot(currentData)
-        .then((meta) => {
-          setAccount((current) => ({
-            ...current,
-            syncing: false,
-            cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
-            cloudSummary: summarizeAppData(currentData),
-            lastSyncedAt: new Date().toISOString(),
-            message: '已自动同步到云端',
-          }));
-        })
-        .catch((error) => {
-          setAccount((current) => ({
-            ...current,
-            syncing: false,
-            message: accountErrorMessage(error),
-          }));
-        });
-    }, 1400);
-    return () => {
-      if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
-    };
+      void syncCurrentDataToCloud('auto');
+    }, intervalMs);
+    return clearAutoSyncTimer;
   }, [data, loaded, account.status, account.userId, account.autoSyncReady]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      const currentData = dataRef.current;
+      const hasUnsyncedChanges =
+        account.status === 'signed-in' &&
+        account.autoSyncReady &&
+        currentData &&
+        (pendingCloudSyncRef.current || lastCloudSyncSignatureRef.current !== createCloudSyncSignature(currentData));
+      if (!hasUnsyncedChanges) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [account.status, account.autoSyncReady, account.userId]);
 
   const showNotice: ShowNotice = (message) => {
     setNotice(message);
@@ -822,6 +932,7 @@ export default function App() {
         status: 'signed-out',
         busy: false,
         syncing: false,
+        pendingCloudSync: false,
         autoSyncReady: false,
         message: '注册已提交，但当前 Supabase 项目要求邮箱确认；请关闭 Auth 邮箱确认后再使用用户名登录',
       });
@@ -835,10 +946,14 @@ export default function App() {
       const currentData = dataRef.current;
       if (!cloudMeta && currentData) {
         const savedMeta = await saveCloudSnapshot(currentData);
+        lastCloudSyncSignatureRef.current = createCloudSyncSignature(currentData);
+        pendingCloudSyncRef.current = false;
         setAccount((current) => ({
           ...current,
           busy: false,
           autoSyncReady: true,
+          pendingCloudSync: false,
+          nextAutoSyncAt: undefined,
           cloudUpdatedAt: savedMeta.updated_at ?? savedMeta.client_updated_at ?? new Date().toISOString(),
           cloudSummary: summarizeAppData(currentData),
           lastCloudCheckedAt: new Date().toISOString(),
@@ -893,12 +1008,25 @@ export default function App() {
     signOut: async () => {
       markAccountBusy('正在退出登录...');
       try {
-        if (autoSyncTimerRef.current) clearTimeout(autoSyncTimerRef.current);
+        clearAutoSyncTimer();
+        const currentData = dataRef.current;
+        const hasUnsyncedChanges =
+          account.autoSyncReady &&
+          currentData &&
+          (pendingCloudSyncRef.current || lastCloudSyncSignatureRef.current !== createCloudSyncSignature(currentData));
+        if (hasUnsyncedChanges) {
+          const synced = await syncCurrentDataToCloud('logout');
+          if (!synced) return;
+        }
+        setAccount((current) => ({ ...current, busy: true, syncing: false, message: '正在退出登录...' }));
         await signOutAccount();
+        lastCloudSyncSignatureRef.current = undefined;
+        pendingCloudSyncRef.current = false;
         setAccount({
           status: 'signed-out',
           busy: false,
           syncing: false,
+          pendingCloudSync: false,
           autoSyncReady: false,
           message: '已退出登录，本机数据仍保留',
         });
@@ -910,27 +1038,7 @@ export default function App() {
       }
     },
     uploadCloud: async () => {
-      const currentData = dataRef.current;
-      if (!currentData) return;
-      markAccountBusy('正在上传本机数据到云端...');
-      try {
-        const meta = await saveCloudSnapshot(currentData);
-        setAccount((current) => ({
-          ...current,
-          busy: false,
-          autoSyncReady: true,
-          cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
-          cloudSummary: summarizeAppData(currentData),
-          lastCloudCheckedAt: new Date().toISOString(),
-          lastSyncedAt: new Date().toISOString(),
-          message: '已上传本机数据，并开启本次自动同步',
-        }));
-        showNotice('本机数据已上传到云端');
-      } catch (error) {
-        const message = accountErrorMessage(error);
-        setAccount((current) => ({ ...current, busy: false, message }));
-        showNotice(message);
-      }
+      await syncCurrentDataToCloud('manual');
     },
     restoreCloud: async () => {
       markAccountBusy('正在从云端恢复...');
@@ -950,10 +1058,14 @@ export default function App() {
         }
         setData(snapshot.data);
         const restoredSummary = summarizeAppData(snapshot.data);
+        lastCloudSyncSignatureRef.current = createCloudSyncSignature(snapshot.data);
+        pendingCloudSyncRef.current = false;
         setAccount((current) => ({
           ...current,
           busy: false,
           autoSyncReady: true,
+          pendingCloudSync: false,
+          nextAutoSyncAt: undefined,
           cloudUpdatedAt: snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? current.cloudUpdatedAt,
           cloudSummary: restoredSummary,
           lastCloudCheckedAt: new Date().toISOString(),
@@ -2298,6 +2410,7 @@ function SettingsScreen({
   const activeVisionServiceKey = getAiServiceKey(activeVisionPreset, aiOcrEndpoint);
   const activeTextServiceKey = getAiServiceKey(activeTextPreset, aiOcrTextEndpoint);
   const localDataSummary = summarizeAppData(data);
+  const activeCloudSyncInterval = normalizeCloudSyncIntervalMinutes(data.settings.cloudAutoSyncIntervalMinutes);
 
   const resetDraftFromSettings = (settings: AppSettings) => {
     const visionPreset = findAiPreset(VISION_MODEL_PRESETS, settings.aiOcrEndpoint, settings.aiOcrModel);
@@ -2477,6 +2590,21 @@ function SettingsScreen({
     setRestorePromptVisible(true);
   };
 
+  const updateCloudAutoSyncInterval = (minutes: number) => {
+    const nextMinutes = normalizeCloudSyncIntervalMinutes(minutes);
+    updateData(
+      (current) => ({
+        ...current,
+        settings: {
+          ...current.settings,
+          cloudAutoSyncIntervalMinutes: nextMinutes,
+        },
+      }),
+      `修改云端自动同步间隔为 ${nextMinutes ? `${nextMinutes} 分钟` : '关闭'}`,
+    );
+    setNotice(nextMinutes ? `自动同步间隔已改为 ${nextMinutes} 分钟` : '已关闭自动同步；退出登录前仍会尝试同步未保存更改');
+  };
+
   const copyBackup = async () => {
     await Clipboard.setStringAsync(exportAppData(data));
     setNotice('备份数据已复制到剪贴板');
@@ -2632,7 +2760,7 @@ function SettingsScreen({
           </View>
           {account.status === 'signed-in' ? (
             <View style={styles.accountStatusPill}>
-              <Text style={styles.accountStatusText}>{account.syncing ? '同步中' : account.autoSyncReady ? '已同步' : '已登录'}</Text>
+              <Text style={styles.accountStatusText}>{account.syncing ? '同步中' : account.pendingCloudSync ? '待同步' : account.autoSyncReady ? '已同步' : '已登录'}</Text>
             </View>
           ) : null}
         </View>
@@ -2691,7 +2819,31 @@ function SettingsScreen({
                   云端快照：{account.cloudUpdatedAt ? formatCloudTime(account.cloudUpdatedAt) : '暂无'}
                   {account.lastSyncedAt ? ` · 本次同步 ${formatCloudTime(account.lastSyncedAt)}` : ''}
                 </Text>
-                <Text style={styles.helpText}>{account.autoSyncReady ? '后续修改会在本次登录期间自动同步。' : '云端已有数据时，需要先手动选择上传或恢复，避免误覆盖。'}</Text>
+                <Text style={styles.helpText}>
+                  {account.pendingCloudSync
+                    ? account.nextAutoSyncAt
+                      ? `本机有待同步更改，预计 ${formatCloudTime(account.nextAutoSyncAt)} 自动同步。`
+                      : '本机有待同步更改；自动同步已关闭，手动上传或退出登录前会同步。'
+                    : account.autoSyncReady
+                      ? '本次登录已启用云端同步。'
+                      : '云端已有数据时，需要先手动选择上传或恢复，避免误覆盖。'}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.syncIntervalBlock}>
+              <Text style={styles.accountSnapshotTitle}>自动同步间隔</Text>
+              <View style={styles.syncIntervalOptions}>
+                {CLOUD_SYNC_INTERVAL_OPTIONS.map((option) => (
+                  <Pressable
+                    key={option.minutes}
+                    style={[styles.syncIntervalOption, activeCloudSyncInterval === option.minutes && styles.syncIntervalOptionActive]}
+                    onPress={() => updateCloudAutoSyncInterval(option.minutes)}
+                  >
+                    <Text style={[styles.syncIntervalOptionText, activeCloudSyncInterval === option.minutes && styles.syncIntervalOptionTextActive]}>
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
             </View>
             <View style={styles.accountSnapshotGrid}>
@@ -3902,6 +4054,40 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 10,
     marginTop: 8,
+  },
+  syncIntervalBlock: {
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 8,
+    backgroundColor: colors.white,
+    padding: 10,
+    marginTop: 8,
+  },
+  syncIntervalOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  syncIntervalOption: {
+    minHeight: 32,
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.panelTint,
+    paddingHorizontal: 10,
+  },
+  syncIntervalOptionActive: {
+    borderColor: colors.blue,
+    backgroundColor: colors.blueSoft,
+  },
+  syncIntervalOptionText: {
+    color: colors.muted,
+    fontWeight: '900',
+    fontSize: 12,
+  },
+  syncIntervalOptionTextActive: {
+    color: colors.blue,
   },
   accountSnapshotGrid: {
     flexDirection: 'row',

@@ -156,6 +156,10 @@ function normalizeAppData(
       aiOcrTextEnabled: parsed.settings?.aiOcrTextEnabled ?? empty.settings.aiOcrTextEnabled,
       aiOcrProviderKeys: normalizeKeyMap(parsed.settings?.aiOcrProviderKeys),
       aiOcrTextProviderKeys: normalizeKeyMap(parsed.settings?.aiOcrTextProviderKeys),
+      cloudAutoSyncIntervalMinutes: normalizeCloudSyncIntervalMinutes(
+        parsed.settings?.cloudAutoSyncIntervalMinutes,
+        empty.settings.cloudAutoSyncIntervalMinutes,
+      ),
     },
     inventory: normalizeInventory(parsed.inventory),
     stockLogs,
@@ -171,6 +175,11 @@ function normalizeKeyMap(value: unknown): Record<string, string> {
     if (typeof apiKey === 'string') next[key] = apiKey;
     return next;
   }, {});
+}
+
+function normalizeCloudSyncIntervalMinutes(value: unknown, fallback: number) {
+  const minutes = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+  return [0, 5, 15, 30, 60].includes(minutes) ? minutes : fallback;
 }
 
 function normalizeActionHistory(entries: ActionHistoryEntry[]): ActionHistoryEntry[] {
@@ -194,6 +203,10 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
       aiOcrTextEnabled: snapshot.settings?.aiOcrTextEnabled ?? empty.settings.aiOcrTextEnabled,
       aiOcrProviderKeys: normalizeKeyMap(snapshot.settings?.aiOcrProviderKeys),
       aiOcrTextProviderKeys: normalizeKeyMap(snapshot.settings?.aiOcrTextProviderKeys),
+      cloudAutoSyncIntervalMinutes: normalizeCloudSyncIntervalMinutes(
+        snapshot.settings?.cloudAutoSyncIntervalMinutes,
+        empty.settings.cloudAutoSyncIntervalMinutes,
+      ),
     },
     inventory: normalizeInventory(snapshot.inventory),
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],

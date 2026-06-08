@@ -28,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiOcrProviderKeys: {},
   aiOcrTextProviderKeys: {},
   aiOcrUseSameKey: false,
+  cloudAutoSyncIntervalMinutes: 5,
 };
 
 const HISTORY_LIMIT = 80;
@@ -160,6 +161,10 @@ function undoSettings(current: AppSettings, before: AppSettings, after: AppSetti
       ? before.aiOcrTextProviderKeys
       : current.aiOcrTextProviderKeys,
     aiOcrUseSameKey: current.aiOcrUseSameKey === after.aiOcrUseSameKey ? before.aiOcrUseSameKey : current.aiOcrUseSameKey,
+    cloudAutoSyncIntervalMinutes:
+      current.cloudAutoSyncIntervalMinutes === after.cloudAutoSyncIntervalMinutes
+        ? before.cloudAutoSyncIntervalMinutes
+        : current.cloudAutoSyncIntervalMinutes,
   };
 }
 

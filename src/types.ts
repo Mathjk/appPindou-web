@@ -73,6 +73,7 @@ export type AppSettings = {
   aiOcrProviderKeys: Record<string, string>;
   aiOcrTextProviderKeys: Record<string, string>;
   aiOcrUseSameKey: boolean;
+  cloudAutoSyncIntervalMinutes: number;
 };
 
 export type PurchaseItem = {
