@@ -88,6 +88,8 @@ type AccountPanelState = {
   syncing: boolean;
   message?: string;
   cloudUpdatedAt?: string;
+  cloudSummary?: AppDataSummary;
+  lastCloudCheckedAt?: string;
   lastSyncedAt?: string;
   autoSyncReady: boolean;
 };
@@ -98,6 +100,14 @@ type AccountActions = {
   uploadCloud: () => Promise<void>;
   restoreCloud: () => Promise<void>;
   refreshCloud: () => Promise<void>;
+};
+type AppDataSummary = {
+  stockedColors: number;
+  totalStock: number;
+  projects: number;
+  projectItems: number;
+  purchaseLists: number;
+  purchaseItems: number;
 };
 type OcrProgressStage = 'prepare' | 'vision' | 'text' | 'local';
 type OcrProgressState = {
@@ -525,6 +535,22 @@ function formatDuration(totalSeconds: number) {
   return minutes ? `${minutes}分${seconds.toString().padStart(2, '0')}秒` : `${seconds}秒`;
 }
 
+function summarizeAppData(data: AppData): AppDataSummary {
+  const inventoryEntries = Object.values(data.inventory);
+  return {
+    stockedColors: inventoryEntries.filter((entry) => (entry.quantity ?? 0) > 0).length,
+    totalStock: inventoryEntries.reduce((sum, entry) => sum + Math.max(0, entry.quantity ?? 0), 0),
+    projects: data.projects.length,
+    projectItems: data.projects.reduce((sum, project) => sum + project.items.length, 0),
+    purchaseLists: data.purchaseLists.length,
+    purchaseItems: data.purchaseLists.reduce((sum, list) => sum + list.items.length, 0),
+  };
+}
+
+function formatDataSummary(summary: AppDataSummary) {
+  return `库存 ${summary.stockedColors} 色/${summary.totalStock} 颗 · 图纸 ${summary.projects} 份/${summary.projectItems} 项 · 采购 ${summary.purchaseLists} 表/${summary.purchaseItems} 项`;
+}
+
 function createOcrProgress(stage: OcrProgressStage, previous?: OcrProgressState): OcrProgressState {
   const now = Date.now();
   const startedAt = previous?.startedAt ?? now;
@@ -646,6 +672,8 @@ export default function App() {
         userId: session.user.id,
         profile: profile ?? fallbackProfile,
         cloudUpdatedAt: cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? undefined,
+        cloudSummary: cloudMeta && current.userId === session.user.id ? current.cloudSummary : undefined,
+        lastCloudCheckedAt: cloudMeta && current.userId === session.user.id ? current.lastCloudCheckedAt : undefined,
         busy: false,
         syncing: false,
         message: message ?? (cloudMeta ? '已登录，云端已有数据，可选择恢复或上传覆盖' : '已登录，云端还没有快照'),
@@ -719,6 +747,7 @@ export default function App() {
             ...current,
             syncing: false,
             cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
+            cloudSummary: summarizeAppData(currentData),
             lastSyncedAt: new Date().toISOString(),
             message: '已自动同步到云端',
           }));
@@ -803,13 +832,16 @@ export default function App() {
     await loadAccountForSession(session, successNotice);
     try {
       const cloudMeta = await fetchCloudSnapshotMeta();
-      if (!cloudMeta && dataRef.current) {
-        const savedMeta = await saveCloudSnapshot(dataRef.current);
+      const currentData = dataRef.current;
+      if (!cloudMeta && currentData) {
+        const savedMeta = await saveCloudSnapshot(currentData);
         setAccount((current) => ({
           ...current,
           busy: false,
           autoSyncReady: true,
           cloudUpdatedAt: savedMeta.updated_at ?? savedMeta.client_updated_at ?? new Date().toISOString(),
+          cloudSummary: summarizeAppData(currentData),
+          lastCloudCheckedAt: new Date().toISOString(),
           lastSyncedAt: new Date().toISOString(),
           message: '已创建云端快照，并开启本次自动同步',
         }));
@@ -821,6 +853,7 @@ export default function App() {
         busy: false,
         autoSyncReady: false,
         cloudUpdatedAt: cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? current.cloudUpdatedAt,
+        cloudSummary: cloudMeta ? current.cloudSummary : undefined,
         message: cloudMeta ? '已登录，云端已有快照，请选择恢复或上传覆盖' : successNotice,
       }));
       showNotice(cloudMeta ? '已登录；云端已有数据，先选择恢复或上传' : successNotice);
@@ -887,6 +920,8 @@ export default function App() {
           busy: false,
           autoSyncReady: true,
           cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? new Date().toISOString(),
+          cloudSummary: summarizeAppData(currentData),
+          lastCloudCheckedAt: new Date().toISOString(),
           lastSyncedAt: new Date().toISOString(),
           message: '已上传本机数据，并开启本次自动同步',
         }));
@@ -902,20 +937,30 @@ export default function App() {
       try {
         const snapshot = await loadCloudSnapshot();
         if (!snapshot) {
-          setAccount((current) => ({ ...current, busy: false, message: '云端还没有快照' }));
+          setAccount((current) => ({
+            ...current,
+            busy: false,
+            cloudUpdatedAt: undefined,
+            cloudSummary: undefined,
+            lastCloudCheckedAt: new Date().toISOString(),
+            message: '云端还没有快照。可以先点“上传本机数据”。',
+          }));
           showNotice('云端还没有快照');
           return;
         }
         setData(snapshot.data);
+        const restoredSummary = summarizeAppData(snapshot.data);
         setAccount((current) => ({
           ...current,
           busy: false,
           autoSyncReady: true,
           cloudUpdatedAt: snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? current.cloudUpdatedAt,
+          cloudSummary: restoredSummary,
+          lastCloudCheckedAt: new Date().toISOString(),
           lastSyncedAt: new Date().toISOString(),
-          message: '已从云端恢复，并开启本次自动同步',
+          message: `已从云端恢复：${formatDataSummary(restoredSummary)}`,
         }));
-        showNotice('已从云端恢复数据');
+        showNotice(`已从云端恢复：${formatDataSummary(restoredSummary)}`);
       } catch (error) {
         const message = accountErrorMessage(error);
         setAccount((current) => ({ ...current, busy: false, message }));
@@ -926,7 +971,44 @@ export default function App() {
       markAccountBusy('正在刷新云端状态...');
       try {
         const session = await getCurrentAccountSession();
-        await loadAccountForSession(session, '云端状态已刷新', { keepAutoSync: true });
+        if (!session?.user) {
+          await loadAccountForSession(session, '未登录，无法刷新云端状态', { keepAutoSync: true });
+          showNotice('未登录，无法刷新云端状态');
+          return;
+        }
+        const [profile, snapshot] = await Promise.all([fetchAccountProfile(), loadCloudSnapshot()]);
+        const checkedAt = new Date().toISOString();
+        if (!snapshot) {
+          setAccount((current) => ({
+            ...current,
+            status: 'signed-in',
+            userId: session.user.id,
+            profile: profile ?? current.profile,
+            busy: false,
+            syncing: false,
+            cloudUpdatedAt: undefined,
+            cloudSummary: undefined,
+            lastCloudCheckedAt: checkedAt,
+            message: '云端还没有快照。可以先点“上传本机数据”。',
+          }));
+          showNotice('云端还没有快照，可以先上传本机数据');
+          return;
+        }
+        const summary = summarizeAppData(snapshot.data);
+        setAccount((current) => ({
+          ...current,
+          status: 'signed-in',
+          userId: session.user.id,
+          profile: profile ?? current.profile,
+          busy: false,
+          syncing: false,
+          cloudUpdatedAt: snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? undefined,
+          cloudSummary: summary,
+          lastCloudCheckedAt: checkedAt,
+          message: `云端状态已刷新：${formatDataSummary(summary)}`,
+          autoSyncReady: current.autoSyncReady,
+        }));
+        showNotice(`云端状态已刷新：${formatDataSummary(summary)}`);
       } catch (error) {
         const message = accountErrorMessage(error);
         setAccount((current) => ({ ...current, busy: false, message }));
@@ -1042,6 +1124,50 @@ function UnsavedSettingsPrompt({
             <ActionButton label="继续编辑" onPress={onCancel} tone="neutral" />
             <ActionButton label="不保存" onPress={onDiscard} tone="danger" />
             <ActionButton label="保存" onPress={onSave} tone="amber" />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function CloudRestorePrompt({
+  visible,
+  cloudUpdatedAt,
+  cloudSummary,
+  localSummary,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean;
+  cloudUpdatedAt?: string;
+  cloudSummary?: AppDataSummary;
+  localSummary: AppDataSummary;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.promptBackdrop}>
+        <View style={styles.promptPanel}>
+          <Text style={styles.panelTitle}>从云端恢复</Text>
+          <Text style={styles.muted}>确认后会从 Supabase 读取最新快照，并覆盖当前本机数据。继续前建议先导出一份本地备份。</Text>
+          <View style={styles.restoreCompare}>
+            <View style={styles.restoreColumn}>
+              <Text style={styles.accountSnapshotTitle}>当前本机</Text>
+              <Text style={styles.accountSnapshotText}>{formatDataSummary(localSummary)}</Text>
+            </View>
+            <View style={styles.restoreColumn}>
+              <Text style={styles.accountSnapshotTitle}>云端快照</Text>
+              <Text style={styles.accountSnapshotText}>{cloudSummary ? formatDataSummary(cloudSummary) : '确认时会重新查询云端'}</Text>
+              <Text style={styles.accountSnapshotMeta}>{cloudUpdatedAt ? formatCloudTime(cloudUpdatedAt) : '尚未读取到快照时间'}</Text>
+            </View>
+          </View>
+          <View style={styles.promptActions}>
+            <ActionButton label="取消" onPress={onCancel} tone="neutral" />
+            <ActionButton label={busy ? '恢复中...' : '确认恢复'} onPress={busy ? () => undefined : onConfirm} tone="danger" />
           </View>
         </View>
       </View>
@@ -2162,6 +2288,7 @@ function SettingsScreen({
   const [accountUsername, setAccountUsername] = useState('');
   const [accountPassword, setAccountPassword] = useState('');
   const [accountRecoveryEmail, setAccountRecoveryEmail] = useState('');
+  const [restorePromptVisible, setRestorePromptVisible] = useState(false);
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
   const activeVisionPreset = findAiPreset(VISION_MODEL_PRESETS, aiOcrEndpoint, aiOcrModel);
@@ -2170,6 +2297,7 @@ function SettingsScreen({
   const activeTextModel = findAiModelOption(activeTextPreset, aiOcrTextModel);
   const activeVisionServiceKey = getAiServiceKey(activeVisionPreset, aiOcrEndpoint);
   const activeTextServiceKey = getAiServiceKey(activeTextPreset, aiOcrTextEndpoint);
+  const localDataSummary = summarizeAppData(data);
 
   const resetDraftFromSettings = (settings: AppSettings) => {
     const visionPreset = findAiPreset(VISION_MODEL_PRESETS, settings.aiOcrEndpoint, settings.aiOcrModel);
@@ -2346,16 +2474,7 @@ function SettingsScreen({
   };
 
   const confirmCloudRestore = () => {
-    Alert.alert('从云端恢复', '这会用云端快照覆盖当前本机数据。继续前建议先导出一份本地备份。', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '确认恢复',
-        style: 'destructive',
-        onPress: () => {
-          void accountActions.restoreCloud();
-        },
-      },
-    ]);
+    setRestorePromptVisible(true);
   };
 
   const copyBackup = async () => {
@@ -2411,6 +2530,7 @@ function SettingsScreen({
   };
 
   return (
+    <>
     <ScrollView showsVerticalScrollIndicator={false}>
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>库存设置</Text>
@@ -2574,6 +2694,17 @@ function SettingsScreen({
                 <Text style={styles.helpText}>{account.autoSyncReady ? '后续修改会在本次登录期间自动同步。' : '云端已有数据时，需要先手动选择上传或恢复，避免误覆盖。'}</Text>
               </View>
             </View>
+            <View style={styles.accountSnapshotGrid}>
+              <View style={styles.accountSnapshotCard}>
+                <Text style={styles.accountSnapshotTitle}>本机数据</Text>
+                <Text style={styles.accountSnapshotText}>{formatDataSummary(localDataSummary)}</Text>
+              </View>
+              <View style={styles.accountSnapshotCard}>
+                <Text style={styles.accountSnapshotTitle}>云端数据</Text>
+                <Text style={styles.accountSnapshotText}>{account.cloudSummary ? formatDataSummary(account.cloudSummary) : '未读取快照内容'}</Text>
+                {account.lastCloudCheckedAt ? <Text style={styles.accountSnapshotMeta}>刷新 {formatCloudTime(account.lastCloudCheckedAt)}</Text> : null}
+              </View>
+            </View>
             <View style={styles.buttonRow}>
               <ActionButton label="刷新状态" onPress={() => void accountActions.refreshCloud()} tone="neutral" />
               <ActionButton label="上传本机数据" onPress={() => void accountActions.uploadCloud()} tone="amber" />
@@ -2647,6 +2778,19 @@ function SettingsScreen({
         </Text>
       </Pressable>
     </ScrollView>
+    <CloudRestorePrompt
+      visible={restorePromptVisible}
+      cloudUpdatedAt={account.cloudUpdatedAt}
+      cloudSummary={account.cloudSummary}
+      localSummary={localDataSummary}
+      busy={account.busy}
+      onCancel={() => setRestorePromptVisible(false)}
+      onConfirm={() => {
+        setRestorePromptVisible(false);
+        void accountActions.restoreCloud();
+      }}
+    />
+    </>
   );
 }
 
@@ -3758,6 +3902,55 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 10,
     marginTop: 8,
+  },
+  accountSnapshotGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  accountSnapshotCard: {
+    flex: 1,
+    minWidth: 150,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 8,
+    backgroundColor: colors.white,
+    padding: 10,
+  },
+  accountSnapshotTitle: {
+    color: colors.ink,
+    fontWeight: '900',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  accountSnapshotText: {
+    color: colors.inkSoft,
+    fontFamily: fonts.text,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  accountSnapshotMeta: {
+    color: colors.muted,
+    fontFamily: fonts.text,
+    fontSize: 11,
+    marginTop: 5,
+  },
+  restoreCompare: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  restoreColumn: {
+    flex: 1,
+    minWidth: 180,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panelTint,
+    padding: 10,
   },
   segmentedRow: {
     flexDirection: 'row',
