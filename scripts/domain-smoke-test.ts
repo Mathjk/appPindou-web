@@ -5,10 +5,12 @@ import {
   applyStockChange,
   buildPurchaseRows,
   buildRequirementRows,
+  completePurchaseList,
   createEmptyData,
   createProject,
   deductProjectInventory,
   formatPurchaseRows,
+  getProjectDeductCount,
   getStock,
   recordActionHistory,
   rollbackToHistoryEntry,
@@ -56,7 +58,46 @@ assert(rows[0].missing === 1201 && rows[0].packsToBuy === 2, '1201 missing shoul
 data = deductProjectInventory(data, project);
 assert(data.inventory.G2.quantity === 0, 'deducting more than stock should clamp inventory to zero');
 assert(data.projects[0].deductedAt, 'deducting a project should mark deductedAt');
+assert(getProjectDeductCount(data.projects[0]) === 1, 'deducting a project should increment deduct count');
 assert(data.projects[0].status === 'active', 'deducting a project should mark it active');
+
+let purchaseCompleteData = createEmptyData();
+const purchaseCompleteList = purchaseCompleteData.purchaseLists[0];
+purchaseCompleteData = addPurchaseItem(purchaseCompleteData, purchaseCompleteList.id, 'A1', 120);
+purchaseCompleteData = addPurchaseItem(purchaseCompleteData, purchaseCompleteList.id, 'A2', 80);
+purchaseCompleteData = recordActionHistory(purchaseCompleteData, completePurchaseList(purchaseCompleteData, purchaseCompleteList.id), '采购完成入库');
+assert(getStock(purchaseCompleteData, 'A1') === 120, 'complete purchase should add first color into inventory');
+assert(getStock(purchaseCompleteData, 'A2') === 80, 'complete purchase should add second color into inventory');
+assert(purchaseCompleteData.purchaseLists[0].items.length === 0, 'complete purchase should clear current purchase list');
+purchaseCompleteData = undoSingleHistoryEntry(purchaseCompleteData, purchaseCompleteData.actionHistory[0].id);
+assert(getStock(purchaseCompleteData, 'A1') === 0, 'undo purchase completion should remove added stock');
+assert(purchaseCompleteData.purchaseLists[0].items.length === 2, 'undo purchase completion should restore purchase items');
+
+let safetyData = createEmptyData();
+const safetyProject = {
+  ...createProject('余量预警测试'),
+  items: [{ id: 'safe_item_1', code: 'G2', quantity: 134 }],
+};
+safetyData = upsertProject(safetyData, safetyProject);
+safetyData = applyStockChange(safetyData, 'G2', 136, 'purchase', 'safety');
+const safetyRows = buildRequirementRows(safetyData, [safetyProject]);
+assert(safetyRows[0].missing === 0, 'safety warning row should not be missing');
+assert(safetyRows[0].remaining === 2, 'safety warning row should expose stock remaining');
+assert(safetyRows[0].safetyWarning === true, 'remaining below default 50 should trigger safety warning');
+
+let deductHistoryData = createEmptyData();
+const deductHistoryProject = {
+  ...createProject('扣除撤销测试'),
+  items: [{ id: 'deduct_item_1', code: 'G2', quantity: 10 }],
+};
+deductHistoryData = upsertProject(deductHistoryData, deductHistoryProject);
+deductHistoryData = applyStockChange(deductHistoryData, 'G2', 30, 'purchase', 'deduct history');
+deductHistoryData = recordActionHistory(deductHistoryData, deductProjectInventory(deductHistoryData, deductHistoryProject), '扣除库存');
+assert(getProjectDeductCount(deductHistoryData.projects[0]) === 1, 'history deduct should mark one deduction');
+deductHistoryData = undoSingleHistoryEntry(deductHistoryData, deductHistoryData.actionHistory[0].id);
+assert(getProjectDeductCount(deductHistoryData.projects[0]) === 0, 'undo deduct should restore deduct count');
+assert(deductHistoryData.projects[0].deductedAt === undefined, 'undo deduct should clear deductedAt when it was not set before');
+assert(getStock(deductHistoryData, 'G2') === 30, 'undo deduct should restore inventory');
 
 let historyData = createEmptyData();
 historyData = recordActionHistory(historyData, applyStockChange(historyData, 'G2', 100, 'purchase', 'history'), 'G2 add 100');

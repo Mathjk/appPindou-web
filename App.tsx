@@ -47,6 +47,7 @@ import {
   buildPurchaseRows,
   buildRequirementRows,
   clampWholeNumber,
+  completePurchaseList,
   createEmptyData,
   createPurchaseList,
   createProject,
@@ -55,6 +56,7 @@ import {
   deleteProject,
   formatPurchaseRows,
   getInventoryStats,
+  getProjectDeductCount,
   getStock,
   makeId,
   parseWholeNumber,
@@ -1638,9 +1640,12 @@ function ProjectsScreen({
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
   const rows = selectedProject ? buildRequirementRows(data, [selectedProject]) : [];
+  const projectDeductCount = selectedProject ? getProjectDeductCount(selectedProject) : 0;
   const deductRequiredTotal = rows.reduce((sum, row) => sum + row.required, 0);
   const deductCoveredTotal = rows.reduce((sum, row) => sum + Math.min(row.required, row.stock), 0);
   const deductMissingTotal = rows.reduce((sum, row) => sum + row.missing, 0);
+  const safetyWarningRows = rows.filter((row) => row.safetyWarning);
+  const safetyWarningTotal = safetyWarningRows.reduce((sum, row) => sum + Math.max(row.remaining, 0), 0);
 
   useEffect(() => {
     if (!ocrProgress) return;
@@ -1876,10 +1881,14 @@ function ProjectsScreen({
     if (!selectedProject) return;
     updateData(
       (current) => deductProjectInventory(current, selectedProject),
-      `${selectedProject.name} ${selectedProject.deductedAt ? '再次扣除库存' : '扣除库存'}`,
+      `${selectedProject.name} ${projectDeductCount ? '再次扣除库存' : '扣除库存'}`,
     );
     setDeductPreviewOpen(false);
-    setNotice(deductMissingTotal ? `已扣库存；其中 ${deductMissingTotal} 颗库存不足，相关色号已扣到 0` : '已按当前用量扣除库存');
+    setNotice(
+      deductMissingTotal
+        ? `已扣库存；其中 ${deductMissingTotal} 颗库存不足，相关色号已扣到 0`
+        : `已按当前用量扣除库存；累计扣除 ${projectDeductCount + 1} 次`,
+    );
   };
 
   return (
@@ -1931,7 +1940,7 @@ function ProjectsScreen({
                 </Pressable>
               )}
               <Text style={styles.muted}>
-                {selectedProject.items.length} 个颜色 · {selectedProject.deductedAt ? '已扣库存' : '规划中，未扣库存'}
+                {selectedProject.items.length} 个颜色 · {projectDeductCount ? `已扣 ${projectDeductCount} 次` : '规划中，未扣库存'}
               </Text>
             </View>
             <Pressable
@@ -1971,26 +1980,37 @@ function ProjectsScreen({
                 <StatCard label="需要扣除" value={`${deductRequiredTotal}`} />
                 <StatCard label="当前可扣" value={`${deductCoveredTotal}`} tone="ok" />
                 <StatCard label="库存缺口" value={`${deductMissingTotal}`} tone={deductMissingTotal ? 'danger' : 'ok'} />
+                <StatCard label="余量预警" value={`${safetyWarningRows.length}`} tone={safetyWarningRows.length ? 'danger' : 'ok'} />
               </View>
-              {selectedProject.deductedAt ? (
-                <Text style={styles.warningText}>这份图纸已经扣除过库存。再次确认会按当前用量再扣一次，适合返工、补做或重复制作。</Text>
+              {projectDeductCount ? (
+                <Text style={styles.warningText}>这份图纸已经扣除 {projectDeductCount} 次库存。再次确认会按当前用量再扣一次，适合返工、补做或重复制作。</Text>
               ) : (
                 <Text style={styles.muted}>只有确认已经开始制作、豆子实际会被消耗时再扣库存。只是规划图纸时不要确认扣除。</Text>
               )}
               {deductMissingTotal ? <Text style={styles.warningText}>库存不足的色号会扣到 0，不会出现负库存。缺口仍会保留在库存对比和采购缺口中。</Text> : null}
+              {safetyWarningRows.length ? (
+                <Text style={styles.warningText}>
+                  {safetyWarningRows.length} 个颜色虽然不缺豆，但库存余量低于 {data.settings.projectSafetyBuffer} 颗，拼豆损耗后可能不够。
+                  当前这些颜色合计余量 {safetyWarningTotal} 颗。
+                </Text>
+              ) : null}
               <View style={styles.deductRows}>
                 {rows.map((row) => {
                   const color = getColor(row.code);
+                  const rowWarning = row.missing > 0 || row.safetyWarning;
                   return (
                     <View key={row.code} style={styles.deductRow}>
                       <ColorSwatch color={color?.hex ?? '#ddd'} />
                       <View style={styles.flex}>
                         <Text style={styles.codeText}>{row.code}</Text>
-                        <Text style={styles.muted}>需扣 {row.required} · 当前 {row.stock} · 扣后 {Math.max(row.stock - row.required, 0)}</Text>
+                        <Text style={row.safetyWarning ? styles.warningText : styles.muted}>
+                          需扣 {row.required} · 当前 {row.stock} · 扣后 {Math.max(row.remaining, 0)}
+                          {row.safetyWarning ? ` · 低于余量阈值 ${row.safetyBuffer}` : ''}
+                        </Text>
                       </View>
                       <View style={styles.right}>
-                        <Text style={[styles.quantity, row.missing > 0 && styles.dangerText]}>{row.missing}</Text>
-                        <Text style={styles.miniLabel}>缺口</Text>
+                        <Text style={[styles.quantity, rowWarning && styles.dangerText]}>{row.missing > 0 ? row.missing : Math.max(row.remaining, 0)}</Text>
+                        <Text style={styles.miniLabel}>{row.missing > 0 ? '缺口' : row.safetyWarning ? '余量低' : '余量'}</Text>
                       </View>
                     </View>
                   );
@@ -1998,7 +2018,7 @@ function ProjectsScreen({
               </View>
               <View style={styles.buttonRow}>
                 <ActionButton label="取消" onPress={() => setDeductPreviewOpen(false)} tone="neutral" />
-                <ActionButton label={selectedProject.deductedAt ? '确认再次扣除' : '确认扣除库存'} onPress={applyDeductInventory} tone="danger" />
+                <ActionButton label={projectDeductCount ? '确认再次扣除' : '确认扣除库存'} onPress={applyDeductInventory} tone="danger" />
               </View>
             </View>
           ) : null}
@@ -2199,6 +2219,16 @@ function ShoppingScreen({
     setNotice('已把选中图纸缺口加入当前采购表');
   };
 
+  const completeSelectedPurchase = () => {
+    if (!selectedList) return;
+    if (!purchaseRows.length) {
+      setNotice('当前采购表没有可入库的采购项');
+      return;
+    }
+    updateData((current) => completePurchaseList(current, selectedList.id), `${selectedList.name} 采购完成入库`);
+    setNotice(`已将 ${purchaseRows.length} 个颜色、合计 ${totalQuantity} 颗加入豆仓，并清空当前采购表`);
+  };
+
   return (
     <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
       <View style={styles.panel}>
@@ -2257,6 +2287,10 @@ function ShoppingScreen({
               keyboardType="number-pad"
             />
             <Text style={styles.helpText}>当前采购表按 1 份 = {selectedList.packSize} 颗计算，输出格式保持 G2×1。</Text>
+            <View style={styles.buttonRow}>
+              <ActionButton label="采购完成入库" onPress={completeSelectedPurchase} tone="amber" />
+            </View>
+            <Text style={styles.helpText}>完成入库会把当前采购项加入豆仓，并清空这张采购表；可通过顶部提示或历史操作撤销。</Text>
           </View>
 
           <View style={styles.panel}>
@@ -2383,6 +2417,7 @@ function SettingsScreen({
   registerLeaveGuard: (guard: SettingsLeaveGuard | undefined) => void;
 }) {
   const [threshold, setThreshold] = useState(String(data.settings.defaultLowStockThreshold));
+  const [projectSafetyBuffer, setProjectSafetyBuffer] = useState(String(data.settings.projectSafetyBuffer));
   const [aiOcrApiKey, setAiOcrApiKey] = useState(data.settings.aiOcrApiKey);
   const [aiOcrEndpoint, setAiOcrEndpoint] = useState(data.settings.aiOcrEndpoint);
   const [aiOcrModel, setAiOcrModel] = useState(data.settings.aiOcrModel);
@@ -2421,6 +2456,7 @@ function SettingsScreen({
     const textKeys = rememberApiKey(settings.aiOcrTextProviderKeys ?? {}, textServiceKey, settings.aiOcrTextApiKey || '');
 
     setThreshold(String(settings.defaultLowStockThreshold));
+    setProjectSafetyBuffer(String(settings.projectSafetyBuffer ?? 50));
     setAiOcrEndpoint(settings.aiOcrEndpoint || 'https://api.ocr.space/parse/image');
     setAiOcrModel(settings.aiOcrModel || 'ocr.space-engine2');
     setAiOcrTextEndpoint(settings.aiOcrTextEndpoint || 'https://api.deepseek.com/chat/completions');
@@ -2438,6 +2474,7 @@ function SettingsScreen({
     return {
       ...data.settings,
       defaultLowStockThreshold: parseWholeNumber(threshold),
+      projectSafetyBuffer: parseWholeNumber(projectSafetyBuffer),
       aiOcrApiKey: aiOcrApiKey.trim(),
       aiOcrEndpoint: aiOcrEndpoint.trim() || 'https://api.ocr.space/parse/image',
       aiOcrModel: aiOcrModel.trim() || 'ocr.space-engine2',
@@ -2663,6 +2700,8 @@ function SettingsScreen({
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>库存设置</Text>
         <LabeledInput label="默认低库存阈值" value={threshold} onChangeText={setThreshold} keyboardType="number-pad" />
+        <LabeledInput label="图纸余量预警阈值" value={projectSafetyBuffer} onChangeText={setProjectSafetyBuffer} keyboardType="number-pad" />
+        <Text style={styles.helpText}>当图纸需要量和库存差值低于该阈值时，即使不缺豆也会提示可能因损耗不够用。默认 50 颗。</Text>
         <ActionButton label="保存设置" onPress={saveSettings} />
       </View>
 
@@ -3166,18 +3205,20 @@ function formatCloudTime(value: string) {
 
 function RequirementLine({ row, showPacks = false }: { row: ReturnType<typeof buildRequirementRows>[number]; showPacks?: boolean }) {
   const color = getColor(row.code);
+  const rowWarning = row.missing > 0 || row.safetyWarning;
   return (
     <View style={styles.requirementRow}>
       <ColorSwatch color={color?.hex ?? '#ddd'} />
       <View style={styles.flex}>
         <Text style={styles.codeText}>{row.code}</Text>
-        <Text style={styles.muted}>
-          需要 {row.required} · 库存 {row.stock}
+        <Text style={row.safetyWarning ? styles.warningText : styles.muted}>
+          需要 {row.required} · 库存 {row.stock} · 余量 {Math.max(row.remaining, 0)}
+          {row.safetyWarning ? ` · 低于预警阈值 ${row.safetyBuffer}` : ''}
         </Text>
       </View>
       <View style={styles.right}>
-        <Text style={[styles.quantity, row.missing > 0 && styles.dangerText]}>{row.missing}</Text>
-        <Text style={styles.miniLabel}>{showPacks ? `${row.packsToBuy} 份` : '缺口'}</Text>
+        <Text style={[styles.quantity, rowWarning && styles.dangerText]}>{row.missing > 0 ? row.missing : Math.max(row.remaining, 0)}</Text>
+        <Text style={styles.miniLabel}>{row.missing > 0 ? (showPacks ? `${row.packsToBuy} 份` : '缺口') : row.safetyWarning ? '余量低' : '余量'}</Text>
       </View>
     </View>
   );

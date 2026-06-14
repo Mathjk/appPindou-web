@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiOcrTextProviderKeys: {},
   aiOcrUseSameKey: false,
   cloudAutoSyncIntervalMinutes: 5,
+  projectSafetyBuffer: 50,
 };
 
 const HISTORY_LIMIT = 80;
@@ -165,6 +166,7 @@ function undoSettings(current: AppSettings, before: AppSettings, after: AppSetti
       current.cloudAutoSyncIntervalMinutes === after.cloudAutoSyncIntervalMinutes
         ? before.cloudAutoSyncIntervalMinutes
         : current.cloudAutoSyncIntervalMinutes,
+    projectSafetyBuffer: current.projectSafetyBuffer === after.projectSafetyBuffer ? before.projectSafetyBuffer : current.projectSafetyBuffer,
   };
 }
 
@@ -290,16 +292,31 @@ function undoProjects(current: PatternProject[], before: PatternProject[], after
       continue;
     }
     if (!beforeProject || !afterProject || currentIndex === -1) continue;
+    const currentProject = next[currentIndex];
     if (JSON.stringify(next[currentIndex]) === JSON.stringify(afterProject)) {
       next[currentIndex] = beforeProject;
     } else {
       next[currentIndex] = {
-        ...next[currentIndex],
-        items: undoProjectItems(next[currentIndex].items, beforeProject.items, afterProject.items),
+        ...currentProject,
+        name: undoField(currentProject.name, beforeProject.name, afterProject.name),
+        status: undoField(currentProject.status, beforeProject.status, afterProject.status),
+        ocrStatus: undoField(currentProject.ocrStatus, beforeProject.ocrStatus, afterProject.ocrStatus),
+        ocrMessage: undoField(currentProject.ocrMessage, beforeProject.ocrMessage, afterProject.ocrMessage),
+        ocrRawText: undoField(currentProject.ocrRawText, beforeProject.ocrRawText, afterProject.ocrRawText),
+        ocrEngine: undoField(currentProject.ocrEngine, beforeProject.ocrEngine, afterProject.ocrEngine),
+        ocrUpdatedAt: undoField(currentProject.ocrUpdatedAt, beforeProject.ocrUpdatedAt, afterProject.ocrUpdatedAt),
+        deductedAt: undoField(currentProject.deductedAt, beforeProject.deductedAt, afterProject.deductedAt),
+        deductCount: undoField(currentProject.deductCount, beforeProject.deductCount, afterProject.deductCount),
+        updatedAt: undoField(currentProject.updatedAt, beforeProject.updatedAt, afterProject.updatedAt),
+        items: undoProjectItems(currentProject.items, beforeProject.items, afterProject.items),
       };
     }
   }
   return next;
+}
+
+function undoField<T>(current: T, before: T, after: T): T {
+  return JSON.stringify(current) === JSON.stringify(after) ? before : current;
 }
 
 function undoProjectItems(current: ProjectItem[], before: ProjectItem[], after: ProjectItem[]): ProjectItem[] {
@@ -400,15 +417,20 @@ export function sumProjectItems(projects: PatternProject[]) {
 export function buildRequirementRows(data: AppData, projects: PatternProject[], packSize = 1): RequirementRow[] {
   const totals = sumProjectItems(projects);
   const safePackSize = Math.max(1, clampWholeNumber(packSize));
+  const safetyBuffer = Math.max(0, clampWholeNumber(data.settings.projectSafetyBuffer));
   return Object.entries(totals)
     .map(([code, required]) => {
       const stock = getStock(data, code);
       const missing = Math.max(required - stock, 0);
+      const remaining = stock - required;
       return {
         code,
         required,
         stock,
         missing,
+        remaining,
+        safetyBuffer,
+        safetyWarning: missing === 0 && remaining < safetyBuffer,
         packsToBuy: missing > 0 ? Math.ceil(missing / safePackSize) : 0,
       };
     })
@@ -517,6 +539,19 @@ export function addProjectShortageToPurchaseList(data: AppData, listId: string, 
   return next;
 }
 
+export function completePurchaseList(data: AppData, listId: string) {
+  const list = data.purchaseLists.find((item) => item.id === listId);
+  if (!list) return data;
+  const rows = buildPurchaseRows(list);
+  if (!rows.length) return data;
+  let next = data;
+  for (const row of rows) {
+    next = applyStockChange(next, row.code, row.quantity, 'purchase', `采购入库：${list.name}`);
+  }
+  const latestList = next.purchaseLists.find((item) => item.id === list.id) ?? list;
+  return upsertPurchaseList(next, { ...latestList, items: [] });
+}
+
 export function createProject(name: string): PatternProject {
   const now = new Date().toISOString();
   return {
@@ -525,6 +560,7 @@ export function createProject(name: string): PatternProject {
     status: 'planning',
     ocrStatus: 'not-started',
     items: [],
+    deductCount: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -547,15 +583,22 @@ export function deleteProject(data: AppData, projectId: string) {
 }
 
 export function deductProjectInventory(data: AppData, project: PatternProject) {
+  const currentProject = data.projects.find((item) => item.id === project.id) ?? project;
   let next = data;
-  for (const item of project.items) {
-    next = applyStockChange(next, item.code, -clampWholeNumber(item.quantity), 'project-deduct', `扣除：${project.name}`, project.id);
+  for (const item of currentProject.items) {
+    next = applyStockChange(next, item.code, -clampWholeNumber(item.quantity), 'project-deduct', `扣除：${currentProject.name}`, currentProject.id);
   }
+  const deductCount = getProjectDeductCount(currentProject) + 1;
   return upsertProject(next, {
-    ...project,
-    status: project.status === 'completed' ? 'completed' : 'active',
+    ...currentProject,
+    status: currentProject.status === 'completed' ? 'completed' : 'active',
     deductedAt: new Date().toISOString(),
+    deductCount,
   });
+}
+
+export function getProjectDeductCount(project: PatternProject) {
+  return Math.max(0, clampWholeNumber(project.deductCount ?? (project.deductedAt ? 1 : 0)));
 }
 
 export function getInventoryStats(data: AppData) {

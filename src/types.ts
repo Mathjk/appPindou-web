@@ -56,6 +56,7 @@ export type PatternProject = {
   ocrUpdatedAt?: string;
   items: ProjectItem[];
   deductedAt?: string;
+  deductCount?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -74,6 +75,7 @@ export type AppSettings = {
   aiOcrTextProviderKeys: Record<string, string>;
   aiOcrUseSameKey: boolean;
   cloudAutoSyncIntervalMinutes: number;
+  projectSafetyBuffer: number;
 };
 
 export type PurchaseItem = {
@@ -120,6 +122,9 @@ export type RequirementRow = {
   required: number;
   stock: number;
   missing: number;
+  remaining: number;
+  safetyBuffer: number;
+  safetyWarning: boolean;
   packsToBuy: number;
 };
 

@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 import { createEmptyData, createPurchaseList } from './domain';
-import type { ActionHistoryEntry, AppData, AppDataSnapshot, InventoryEntry } from './types';
+import type { ActionHistoryEntry, AppData, AppDataSnapshot, InventoryEntry, PatternProject } from './types';
 
 const STORAGE_KEY = 'appPindou:data:v1';
 
@@ -144,7 +144,7 @@ function normalizeAppData(
   const inventoryPackSize = parsed.settings?.inventoryPackSize ?? parsed.settings?.packSize ?? empty.settings.inventoryPackSize;
   const purchaseLists = Array.isArray(parsed.purchaseLists) && parsed.purchaseLists.length ? parsed.purchaseLists : [createPurchaseList('默认采购表')];
   const stockLogs = Array.isArray(parsed.stockLogs) ? parsed.stockLogs : [];
-  const projects = Array.isArray(parsed.projects) ? parsed.projects : [];
+  const projects = Array.isArray(parsed.projects) ? parsed.projects.map(normalizeProject) : [];
   const actionHistory = Array.isArray(parsed.actionHistory) ? normalizeActionHistory(parsed.actionHistory) : [];
   return {
     ...empty,
@@ -160,6 +160,7 @@ function normalizeAppData(
         parsed.settings?.cloudAutoSyncIntervalMinutes,
         empty.settings.cloudAutoSyncIntervalMinutes,
       ),
+      projectSafetyBuffer: normalizeProjectSafetyBuffer(parsed.settings?.projectSafetyBuffer, empty.settings.projectSafetyBuffer),
     },
     inventory: normalizeInventory(parsed.inventory),
     stockLogs,
@@ -180,6 +181,11 @@ function normalizeKeyMap(value: unknown): Record<string, string> {
 function normalizeCloudSyncIntervalMinutes(value: unknown, fallback: number) {
   const minutes = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
   return [0, 5, 15, 30, 60].includes(minutes) ? minutes : fallback;
+}
+
+function normalizeProjectSafetyBuffer(value: unknown, fallback: number) {
+  const buffer = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+  return buffer;
 }
 
 function normalizeActionHistory(entries: ActionHistoryEntry[]): ActionHistoryEntry[] {
@@ -207,13 +213,33 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
         snapshot.settings?.cloudAutoSyncIntervalMinutes,
         empty.settings.cloudAutoSyncIntervalMinutes,
       ),
+      projectSafetyBuffer: normalizeProjectSafetyBuffer(snapshot.settings?.projectSafetyBuffer, empty.settings.projectSafetyBuffer),
     },
     inventory: normalizeInventory(snapshot.inventory),
     stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
     // Drop any image data URLs carried by legacy history snapshots so previously bloated
     // localStorage shrinks on next save (see stripProjectImages in domain.ts).
-    projects: Array.isArray(snapshot.projects) && shouldStripProjectImagesForStorage() ? snapshot.projects.map(stripProjectImageFields) : snapshot.projects ?? [],
+    projects: normalizeSnapshotProjects(snapshot.projects),
     purchaseLists: Array.isArray(snapshot.purchaseLists) && snapshot.purchaseLists.length ? snapshot.purchaseLists : [createPurchaseList('默认采购表')],
+  };
+}
+
+function normalizeSnapshotProjects(projects: AppDataSnapshot['projects'] | undefined) {
+  if (!Array.isArray(projects)) return [];
+  const normalized = projects.map(normalizeProject);
+  return shouldStripProjectImagesForStorage() ? normalized.map(stripProjectImageFields) : normalized;
+}
+
+function normalizeProject(project: PatternProject): PatternProject {
+  const deductCount =
+    typeof project.deductCount === 'number' && Number.isFinite(project.deductCount)
+      ? Math.max(0, Math.floor(project.deductCount))
+      : project.deductedAt
+        ? 1
+        : 0;
+  return {
+    ...project,
+    deductCount,
   };
 }
 
