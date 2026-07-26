@@ -3,9 +3,9 @@ import * as Clipboard from 'expo-clipboard';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { createElement, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
+  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -69,7 +69,7 @@ import {
   upsertProject,
 } from './src/domain';
 import { recognizePatternDraft } from './src/ocr';
-import { exportAppData, loadAppData, parseImportedData, prepareAppDataForPersistence, saveAppData } from './src/storage';
+import { exportAppData, loadAppData, mergeDeviceKeysIntoSettings, parseImportedData, saveAppData } from './src/storage';
 import type { AccountProfile } from './src/account';
 import type { AppData, AppSettings, PatternProject, ProjectItem, PurchaseList } from './src/types';
 
@@ -98,8 +98,8 @@ type AccountPanelState = {
   autoSyncReady: boolean;
 };
 type AccountActions = {
-  signUp: (username: string, password: string, recoveryEmail?: string) => Promise<void>;
-  signIn: (username: string, password: string) => Promise<void>;
+  signUp: (username: string, password: string, recoveryEmail?: string) => Promise<boolean>;
+  signIn: (username: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   uploadCloud: () => Promise<void>;
   restoreCloud: () => Promise<void>;
@@ -572,10 +572,6 @@ function getCloudSyncIntervalMs(minutes: number) {
   return normalizeCloudSyncIntervalMinutes(minutes) * 60 * 1000;
 }
 
-function createCloudSyncSignature(data: AppData) {
-  return JSON.stringify(prepareAppDataForPersistence(data));
-}
-
 function createOcrProgress(stage: OcrProgressStage, previous?: OcrProgressState): OcrProgressState {
   const now = Date.now();
   const startedAt = previous?.startedAt ?? now;
@@ -627,6 +623,7 @@ export default function App() {
   const viewport = useResponsiveViewport();
   const [tab, setTab] = useState<TabKey>('inventory');
   const [data, setData] = useState<AppData | null>(null);
+  const [inventoryLowOnly, setInventoryLowOnly] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState('');
   const [noticeUndoId, setNoticeUndoId] = useState<string | undefined>();
@@ -642,13 +639,25 @@ export default function App() {
   const lastHistoryIdRef = useRef<string | undefined>(undefined);
   const settingsLeaveGuardRef = useRef<SettingsLeaveGuard | undefined>(undefined);
   const dataRef = useRef<AppData | null>(null);
-  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const lastCloudSyncSignatureRef = useRef<string | undefined>(undefined);
   const pendingCloudSyncRef = useRef(false);
+  // Monotonic edit counter: a sync captures the epoch at start and only clears the pending
+  // flag if no edit landed while the upload was in flight.
+  const dataEpochRef = useRef(0);
+  const nextAutoSyncAtRef = useRef<string | undefined>(undefined);
+  // Newest cloud snapshot timestamp this device has seen (loaded, uploaded, or refreshed).
+  // A cloud snapshot newer than this was written by another device; overwriting it silently
+  // would lose that device's data, so sync pauses and asks the user to choose.
+  const lastKnownCloudUpdatedAtRef = useRef<string | undefined>(undefined);
+  const accountStateRef = useRef<AccountPanelState>(account);
+  const trimmedHistoryNoticeShownRef = useRef(false);
 
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    accountStateRef.current = account;
+  }, [account]);
 
   const loadAccountForSession = async (
     session: Awaited<ReturnType<typeof getCurrentAccountSession>>,
@@ -656,8 +665,6 @@ export default function App() {
     options?: { keepAutoSync?: boolean },
   ) => {
     if (!options?.keepAutoSync) {
-      clearAutoSyncTimer();
-      lastCloudSyncSignatureRef.current = undefined;
       pendingCloudSyncRef.current = false;
     }
     if (!isSupabaseConfigured) {
@@ -703,6 +710,7 @@ export default function App() {
         username: String(session.user.user_metadata?.username ?? '未命名账号'),
         recovery_email: String(session.user.user_metadata?.recovery_email ?? '') || null,
       };
+      lastKnownCloudUpdatedAtRef.current = cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? undefined;
       setAccount((current) => ({
         ...current,
         status: 'signed-in',
@@ -733,7 +741,13 @@ export default function App() {
 
   useEffect(() => {
     loadAppData()
-      .then(setData)
+      .then(({ data: loadedData, recoveredFromCorrupt }) => {
+        dataRef.current = loadedData;
+        setData(loadedData);
+        if (recoveredFromCorrupt) {
+          setNotice('本地数据无法读取，已重置为空。原始内容已备份在本机存储中，可通过导入备份恢复其他设备的数据');
+        }
+      })
       .finally(() => setLoaded(true));
   }, []);
 
@@ -767,18 +781,37 @@ export default function App() {
 
   useEffect(() => {
     if (loaded && data) {
-      saveAppData(data).catch(() => {
-        setNotice('本地保存失败，请稍后重试');
-        setNoticeUndoId(undefined);
-      });
+      saveAppData(data)
+        .then(({ trimmedHistory }) => {
+          if (trimmedHistory && !trimmedHistoryNoticeShownRef.current) {
+            // Every save in a full-quota state trims history; notify once, not per keystroke.
+            trimmedHistoryNoticeShownRef.current = true;
+            setNotice('本机存储空间不足，历史操作记录未能保存（刷新后将丢失）；库存、图纸和采购数据已保存');
+            setNoticeUndoId(undefined);
+          }
+        })
+        .catch(() => {
+          setNotice('本地保存失败，请稍后重试');
+          setNoticeUndoId(undefined);
+        });
     }
   }, [data, loaded]);
 
-  const clearAutoSyncTimer = () => {
-    if (autoSyncTimerRef.current) {
-      clearTimeout(autoSyncTimerRef.current);
-      autoSyncTimerRef.current = undefined;
-    }
+  // Called on every local mutation. Bumps the edit epoch, and when auto sync is active flips
+  // the pending flag so the fixed-cadence engine picks the change up on its next tick.
+  const markCloudDirty = () => {
+    dataEpochRef.current += 1;
+    const accountState = accountStateRef.current;
+    if (accountState.status !== 'signed-in' || !accountState.autoSyncReady) return;
+    if (pendingCloudSyncRef.current) return;
+    pendingCloudSyncRef.current = true;
+    const nextAt = nextAutoSyncAtRef.current;
+    setAccount((current) => ({
+      ...current,
+      pendingCloudSync: true,
+      nextAutoSyncAt: nextAt,
+      message: nextAt ? `本机有未同步更改，将在 ${formatCloudTime(nextAt)} 自动同步` : '本机有未同步更改，自动同步已关闭，手动上传或退出登录前会同步',
+    }));
   };
 
   const syncCurrentDataToCloud = async (mode: 'auto' | 'manual' | 'logout') => {
@@ -788,7 +821,7 @@ export default function App() {
       return false;
     }
 
-    clearAutoSyncTimer();
+    const epochAtStart = dataEpochRef.current;
     const syncingMessage = mode === 'logout' ? '退出前正在同步到云端...' : mode === 'auto' ? '正在自动同步到云端...' : '正在上传本机数据到云端...';
     setAccount((current) => ({
       ...current,
@@ -798,17 +831,40 @@ export default function App() {
     }));
 
     try {
+      // Guard against multi-device clobbering: a cloud snapshot newer than anything this
+      // device has seen was written elsewhere. Pause instead of overwriting; "刷新状态"
+      // updates the known timestamp, after which an explicit upload becomes the user's
+      // deliberate choice to overwrite.
+      const remoteMeta = await fetchCloudSnapshotMeta();
+      const remoteUpdatedAt = remoteMeta?.updated_at ?? remoteMeta?.client_updated_at ?? undefined;
+      const lastKnown = lastKnownCloudUpdatedAtRef.current;
+      if (remoteUpdatedAt && lastKnown && remoteUpdatedAt > lastKnown) {
+        const conflictMessage =
+          '云端出现了更新的快照（可能来自其他设备）。请先点“刷新状态”查看云端数据，再决定“上传本机数据”覆盖或“从云端恢复”。';
+        setAccount((current) => ({
+          ...current,
+          busy: false,
+          syncing: false,
+          autoSyncReady: mode === 'auto' ? false : current.autoSyncReady,
+          cloudUpdatedAt: remoteUpdatedAt,
+          message: conflictMessage,
+        }));
+        setNotice(conflictMessage);
+        return false;
+      }
+
       const meta = await saveCloudSnapshot(currentData);
       const syncedAt = new Date().toISOString();
       const summary = summarizeAppData(currentData);
-      lastCloudSyncSignatureRef.current = createCloudSyncSignature(currentData);
-      pendingCloudSyncRef.current = false;
+      const stillDirty = dataEpochRef.current !== epochAtStart;
+      pendingCloudSyncRef.current = stillDirty;
+      lastKnownCloudUpdatedAtRef.current = meta.updated_at ?? meta.client_updated_at ?? syncedAt;
       setAccount((current) => ({
         ...current,
         busy: false,
         syncing: false,
-        pendingCloudSync: false,
-        nextAutoSyncAt: undefined,
+        pendingCloudSync: stillDirty,
+        nextAutoSyncAt: stillDirty ? nextAutoSyncAtRef.current : undefined,
         autoSyncReady: true,
         cloudUpdatedAt: meta.updated_at ?? meta.client_updated_at ?? syncedAt,
         cloudSummary: summary,
@@ -831,44 +887,41 @@ export default function App() {
     }
   };
 
+  const autoSyncIntervalMinutes = data ? normalizeCloudSyncIntervalMinutes(data.settings.cloudAutoSyncIntervalMinutes) : 5;
+
+  // Fixed-cadence sync engine. The interval is armed per login/interval-setting change and is
+  // deliberately NOT reset when data changes: re-arming on every edit (trailing debounce) meant
+  // one edit per interval kept postponing sync forever. Each tick uploads only when an edit
+  // marked the pending flag; a failed upload keeps the flag, so the next tick retries.
   useEffect(() => {
-    if (!loaded || !data || account.status !== 'signed-in' || !account.autoSyncReady) return;
-    const currentSignature = createCloudSyncSignature(data);
-    if (lastCloudSyncSignatureRef.current === currentSignature) {
-      if (pendingCloudSyncRef.current || account.pendingCloudSync) {
-        pendingCloudSyncRef.current = false;
-        setAccount((current) => ({ ...current, pendingCloudSync: false, nextAutoSyncAt: undefined }));
-      }
+    if (!loaded || account.status !== 'signed-in' || !account.autoSyncReady) {
+      nextAutoSyncAtRef.current = undefined;
       return;
     }
-
-    pendingCloudSyncRef.current = true;
-    const intervalMs = getCloudSyncIntervalMs(data.settings.cloudAutoSyncIntervalMinutes);
-    const nextAutoSyncAt = intervalMs > 0 ? new Date(Date.now() + intervalMs).toISOString() : undefined;
-    clearAutoSyncTimer();
-    setAccount((current) => ({
-      ...current,
-      pendingCloudSync: true,
-      nextAutoSyncAt,
-      message: intervalMs > 0 ? `本机有未同步更改，将在 ${formatCloudTime(nextAutoSyncAt ?? '')} 自动同步` : '本机有未同步更改，自动同步已关闭',
-    }));
-    if (!intervalMs) return;
-
-    autoSyncTimerRef.current = setTimeout(() => {
+    const intervalMs = getCloudSyncIntervalMs(autoSyncIntervalMinutes);
+    if (!intervalMs) {
+      nextAutoSyncAtRef.current = undefined;
+      setAccount((current) =>
+        current.pendingCloudSync
+          ? { ...current, nextAutoSyncAt: undefined, message: '本机有未同步更改，自动同步已关闭，手动上传或退出登录前会同步' }
+          : current,
+      );
+      return;
+    }
+    nextAutoSyncAtRef.current = new Date(Date.now() + intervalMs).toISOString();
+    setAccount((current) => (current.pendingCloudSync ? { ...current, nextAutoSyncAt: nextAutoSyncAtRef.current } : current));
+    const timer = setInterval(() => {
+      nextAutoSyncAtRef.current = new Date(Date.now() + intervalMs).toISOString();
+      if (!pendingCloudSyncRef.current) return;
       void syncCurrentDataToCloud('auto');
     }, intervalMs);
-    return clearAutoSyncTimer;
-  }, [data, loaded, account.status, account.userId, account.autoSyncReady]);
+    return () => clearInterval(timer);
+  }, [loaded, account.status, account.userId, account.autoSyncReady, autoSyncIntervalMinutes]);
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      const currentData = dataRef.current;
-      const hasUnsyncedChanges =
-        account.status === 'signed-in' &&
-        account.autoSyncReady &&
-        currentData &&
-        (pendingCloudSyncRef.current || lastCloudSyncSignatureRef.current !== createCloudSyncSignature(currentData));
+      const hasUnsyncedChanges = account.status === 'signed-in' && account.autoSyncReady && pendingCloudSyncRef.current;
       if (!hasUnsyncedChanges) return;
       event.preventDefault();
       event.returnValue = '';
@@ -903,23 +956,34 @@ export default function App() {
     if (nextTab) setTab(nextTab);
   };
 
+  // All mutations funnel through here. The next state is computed OUTSIDE the setState updater:
+  // React only evaluates updaters eagerly when its queue is empty, and may replay them during
+  // concurrent renders — both broke the old "assign createdHistoryId inside the updater, read it
+  // right after" pattern (the notice undo button pointed at ids that never committed).
+  // dataRef is advanced synchronously so several mutations in one tick chain correctly.
   const updateData: UpdateData = (producer, label = '数据变更', options) => {
-    let createdHistoryId: string | undefined;
-    setData((current) => {
-      if (!current) return current;
-      const produced = producer(current);
-      if (options?.recordHistory === false) return produced;
-      const recorded = recordActionHistory(current, produced, label);
-      createdHistoryId = recorded.actionHistory[0]?.id !== current.actionHistory[0]?.id ? recorded.actionHistory[0]?.id : undefined;
-      return recorded;
-    });
+    const current = dataRef.current;
+    if (!current) return undefined;
+    const produced = producer(current);
+    const next = options?.recordHistory === false ? produced : recordActionHistory(current, produced, label);
+    const createdHistoryId = next !== produced ? next.actionHistory[0]?.id : undefined;
+    dataRef.current = next;
+    setData(next);
     lastHistoryIdRef.current = createdHistoryId;
+    markCloudDirty();
     return createdHistoryId;
   };
 
   const undoNoticeAction = () => {
     if (!noticeUndoId) return;
-    updateData((current) => undoSingleHistoryEntry(current, noticeUndoId), '撤销操作', { recordHistory: false });
+    const current = dataRef.current;
+    const entry = current?.actionHistory.find((item) => item.id === noticeUndoId);
+    if (!current || !entry || entry.undoneAt) {
+      setNotice('该操作已无法撤销，可在设置页的历史操作中查看');
+      setNoticeUndoId(undefined);
+      return;
+    }
+    updateData((data) => undoSingleHistoryEntry(data, noticeUndoId), '撤销操作', { recordHistory: false });
     setNotice('已撤销操作');
     setNoticeUndoId(undefined);
   };
@@ -948,8 +1012,8 @@ export default function App() {
       const currentData = dataRef.current;
       if (!cloudMeta && currentData) {
         const savedMeta = await saveCloudSnapshot(currentData);
-        lastCloudSyncSignatureRef.current = createCloudSyncSignature(currentData);
         pendingCloudSyncRef.current = false;
+        lastKnownCloudUpdatedAtRef.current = savedMeta.updated_at ?? savedMeta.client_updated_at ?? new Date().toISOString();
         setAccount((current) => ({
           ...current,
           busy: false,
@@ -965,6 +1029,7 @@ export default function App() {
         showNotice(`${successNotice}，已创建云端备份`);
         return;
       }
+      lastKnownCloudUpdatedAtRef.current = cloudMeta?.updated_at ?? cloudMeta?.client_updated_at ?? lastKnownCloudUpdatedAtRef.current;
       setAccount((current) => ({
         ...current,
         busy: false,
@@ -990,10 +1055,12 @@ export default function App() {
       try {
         const result = await signUpWithUsername(username, password, recoveryEmail);
         await completeAccountLogin(result.session, '注册并登录成功');
+        return true;
       } catch (error) {
         const message = accountErrorMessage(error);
         setAccount((current) => ({ ...current, busy: false, message }));
         showNotice(message);
+        return false;
       }
     },
     signIn: async (username, password) => {
@@ -1001,28 +1068,24 @@ export default function App() {
       try {
         const result = await signInWithUsername(username, password);
         await completeAccountLogin(result.session, '登录成功');
+        return true;
       } catch (error) {
         const message = accountErrorMessage(error);
         setAccount((current) => ({ ...current, busy: false, message }));
         showNotice(message);
+        return false;
       }
     },
     signOut: async () => {
       markAccountBusy('正在退出登录...');
       try {
-        clearAutoSyncTimer();
-        const currentData = dataRef.current;
-        const hasUnsyncedChanges =
-          account.autoSyncReady &&
-          currentData &&
-          (pendingCloudSyncRef.current || lastCloudSyncSignatureRef.current !== createCloudSyncSignature(currentData));
+        const hasUnsyncedChanges = account.autoSyncReady && pendingCloudSyncRef.current;
         if (hasUnsyncedChanges) {
           const synced = await syncCurrentDataToCloud('logout');
           if (!synced) return;
         }
         setAccount((current) => ({ ...current, busy: true, syncing: false, message: '正在退出登录...' }));
         await signOutAccount();
-        lastCloudSyncSignatureRef.current = undefined;
         pendingCloudSyncRef.current = false;
         setAccount({
           status: 'signed-out',
@@ -1058,10 +1121,17 @@ export default function App() {
           showNotice('云端还没有快照');
           return;
         }
-        setData(snapshot.data);
-        const restoredSummary = summarizeAppData(snapshot.data);
-        lastCloudSyncSignatureRef.current = createCloudSyncSignature(snapshot.data);
+        // Cloud snapshots store empty API key fields (they never leave the device), so merge the
+        // local keys back in. Going through updateData records the restore as a history entry —
+        // an accidental restore can be rolled back from the history list.
+        const local = dataRef.current;
+        const restoredData: AppData = local
+          ? { ...snapshot.data, settings: mergeDeviceKeysIntoSettings(snapshot.data.settings, local.settings) }
+          : snapshot.data;
+        updateData(() => restoredData, '从云端恢复');
         pendingCloudSyncRef.current = false;
+        const restoredSummary = summarizeAppData(restoredData);
+        lastKnownCloudUpdatedAtRef.current = snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? lastKnownCloudUpdatedAtRef.current;
         setAccount((current) => ({
           ...current,
           busy: false,
@@ -1092,6 +1162,7 @@ export default function App() {
         }
         const [profile, snapshot] = await Promise.all([fetchAccountProfile(), loadCloudSnapshot()]);
         const checkedAt = new Date().toISOString();
+        lastKnownCloudUpdatedAtRef.current = snapshot ? (snapshot.meta.updated_at ?? snapshot.meta.client_updated_at ?? undefined) : undefined;
         if (!snapshot) {
           setAccount((current) => ({
             ...current,
@@ -1157,9 +1228,13 @@ export default function App() {
                 {stats.stocked}/{stats.totalColors}
               </Text>
             </View>
-            <View style={styles.badge}>
+            <Pressable
+              accessibilityLabel="筛选低库存颜色"
+              style={[styles.badge, inventoryLowOnly && styles.badgeActive]}
+              onPress={() => setInventoryLowOnly((current) => !current)}
+            >
               <Text style={styles.badgeText}>{stats.low} 低库存</Text>
-            </View>
+            </Pressable>
           </View>
         ) : null}
 
@@ -1182,7 +1257,15 @@ export default function App() {
         ) : null}
 
         <View style={styles.content}>
-          {tab === 'inventory' ? <InventoryScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
+          {tab === 'inventory' ? (
+            <InventoryScreen
+              data={data}
+              updateData={updateData}
+              setNotice={showNotice}
+              lowOnly={inventoryLowOnly}
+              onToggleLowOnly={() => setInventoryLowOnly((current) => !current)}
+            />
+          ) : null}
           {tab === 'projects' ? <ProjectsScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
           {tab === 'shopping' ? <ShoppingScreen data={data} updateData={updateData} setNotice={showNotice} /> : null}
           {tab === 'settings' ? (
@@ -1245,6 +1328,41 @@ function UnsavedSettingsPrompt({
   );
 }
 
+function ConfirmPrompt({
+  visible,
+  title,
+  message,
+  confirmLabel,
+  tone = 'danger',
+  busy = false,
+  onCancel,
+  onConfirm,
+}: {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  tone?: 'danger' | 'amber';
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.promptBackdrop}>
+        <View style={styles.promptPanel}>
+          <Text style={styles.panelTitle}>{title}</Text>
+          <Text style={styles.muted}>{message}</Text>
+          <View style={styles.promptActions}>
+            <ActionButton label="取消" onPress={busy ? () => undefined : onCancel} tone="neutral" />
+            <ActionButton label={confirmLabel} onPress={busy ? () => undefined : onConfirm} tone={tone} />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function CloudRestorePrompt({
   visible,
   cloudUpdatedAt,
@@ -1293,10 +1411,14 @@ function InventoryScreen({
   data,
   updateData,
   setNotice,
+  lowOnly,
+  onToggleLowOnly,
 }: {
   data: AppData;
   updateData: UpdateData;
   setNotice: ShowNotice;
+  lowOnly: boolean;
+  onToggleLowOnly: () => void;
 }) {
   const viewport = useResponsiveViewport();
   const [query, setQuery] = useState('');
@@ -1345,9 +1467,13 @@ function InventoryScreen({
         color.aliases.some((alias) => alias.toUpperCase().includes(normalizedQuery)) ||
         color.nameZh?.includes(query.trim()) ||
         color.nameEn?.toUpperCase().includes(normalizedQuery);
-      return matchesSeries && matchesQuery;
+      if (!matchesSeries || !matchesQuery) return false;
+      if (!lowOnly) return true;
+      const stock = data.inventory[color.code]?.quantity ?? 0;
+      const threshold = data.inventory[color.code]?.lowStockThreshold ?? data.settings.defaultLowStockThreshold;
+      return stock > 0 && stock <= threshold;
     });
-  }, [query, series]);
+  }, [query, series, lowOnly, data.inventory, data.settings.defaultLowStockThreshold]);
 
   const handleSearchChange = (value: string) => {
     const nextQuery = normalizeSearchQuery(value);
@@ -1450,6 +1576,18 @@ function InventoryScreen({
     setNotice(`${selectedColor.code} 已加入「${selectedPurchaseList.name}」×1`);
   };
 
+  const handleSelectCode = useCallback((code: string) => setSelectedCode(code), []);
+
+  const renderColorRow = useCallback(
+    ({ item }: { item: MardColor }) => {
+      const stock = data.inventory[item.code]?.quantity ?? 0;
+      const threshold = data.inventory[item.code]?.lowStockThreshold ?? data.settings.defaultLowStockThreshold;
+      const low = stock > 0 && stock <= threshold;
+      return <InventoryColorRow color={item} stock={stock} low={low} selected={selectedColor.code === item.code} onSelect={handleSelectCode} />;
+    },
+    [data.inventory, data.settings.defaultLowStockThreshold, selectedColor.code, handleSelectCode],
+  );
+
   return (
     <View style={styles.inventoryScreen}>
       <View
@@ -1482,7 +1620,12 @@ function InventoryScreen({
           <>
         <View style={styles.inventoryActionGrid}>
           <View style={styles.inputBlockGrid}>
-            <Text style={styles.label}>颗数</Text>
+            <View style={styles.countLabelRow}>
+              <Text style={styles.label}>颗数</Text>
+              <Pressable accessibilityLabel="盘点为输入颗数" onPress={() => mutateSelected('adjust')}>
+                <Text style={[styles.label, styles.packSizeLink]}>盘点为该数</Text>
+              </Pressable>
+            </View>
             <View style={styles.actionInputRow}>
               <TextInput style={[styles.input, styles.actionInput]} value={amount} onChangeText={setAmount} keyboardType="number-pad" accessibilityLabel="颗数" />
               <RoundActionButton label="+" accessibilityLabel="按颗增加" tone="plus" onPress={() => mutateSelected('amount-add')} />
@@ -1558,7 +1701,7 @@ function InventoryScreen({
       <View style={styles.frozenFilters}>
         <View style={styles.toolbar}>
           <TextInput
-            style={styles.searchInput}
+            style={[styles.searchInput, styles.flex]}
             value={query}
             onChangeText={handleSearchChange}
             onFocus={() => {
@@ -1574,6 +1717,13 @@ function InventoryScreen({
             keyboardType={searchSeries ? 'number-pad' : 'default'}
             accessibilityLabel="色号搜索"
           />
+          <Pressable
+            accessibilityLabel="只看低库存"
+            style={[styles.lowFilterChip, lowOnly && styles.lowFilterChipActive]}
+            onPress={onToggleLowOnly}
+          >
+            <Text style={[styles.lowFilterText, lowOnly && styles.lowFilterTextActive]}>低库存</Text>
+          </Pressable>
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.seriesBar}>
@@ -1586,34 +1736,60 @@ function InventoryScreen({
         {showSearchNumberPad ? <SearchNumberPad onDigit={appendSearchDigit} onDelete={deleteSearchDigit} onDone={() => setSearchKeypadVisible(false)} /> : null}
       </View>
 
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.flex}>
-        <View style={styles.list}>
-          {filteredColors.map((color) => {
-            const stock = getStock(data, color.code);
-            const threshold = data.inventory[color.code]?.lowStockThreshold ?? data.settings.defaultLowStockThreshold;
-            const low = stock > 0 && stock <= threshold;
-            return (
-              <Pressable key={color.code} style={[styles.colorRow, selectedColor.code === color.code && styles.colorRowActive]} onPress={() => setSelectedCode(color.code)}>
-                <ColorSwatch color={color.hex} compact />
-                <View style={styles.flex}>
-                  <Text style={styles.inventoryCodeText}>{color.code}</Text>
-                  <Text style={[styles.muted, styles.inventoryColorMeta]}>
-                    {color.nameZh || color.nameEn || '参考色名缺失'}
-                    {color.nameEn && color.nameEn !== color.code ? ` · ${color.nameEn}` : ''}
-                  </Text>
-                </View>
-                <View style={styles.right}>
-                  <Text style={styles.inventoryQuantity}>{stock}</Text>
-                  <Text style={[styles.miniLabel, low && styles.lowText]}>{low ? '低库存' : '颗'}</Text>
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
-      </ScrollView>
+      <FlatList
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        style={styles.flex}
+        contentContainerStyle={styles.list}
+        data={filteredColors}
+        keyExtractor={keyExtractColorCode}
+        renderItem={renderColorRow}
+        initialNumToRender={24}
+        ListEmptyComponent={lowOnly ? <EmptyState title="没有低库存颜色" body="当前筛选条件下没有低于阈值的颜色。" /> : null}
+      />
     </View>
   );
 }
+
+function keyExtractColorCode(color: MardColor) {
+  return color.code;
+}
+
+type MardColor = (typeof MARD_291_COLORS)[number];
+
+// The 291-color list is the hottest render path: every keystroke in the panel used to re-render
+// all rows inside a plain ScrollView. Rows are memoized on scalar props so only rows whose
+// stock/selection actually changed re-render, and FlatList keeps offscreen rows unmounted.
+const InventoryColorRow = memo(function InventoryColorRow({
+  color,
+  stock,
+  low,
+  selected,
+  onSelect,
+}: {
+  color: MardColor;
+  stock: number;
+  low: boolean;
+  selected: boolean;
+  onSelect: (code: string) => void;
+}) {
+  return (
+    <Pressable style={[styles.colorRow, selected && styles.colorRowActive]} onPress={() => onSelect(color.code)}>
+      <ColorSwatch color={color.hex} compact />
+      <View style={styles.flex}>
+        <Text style={styles.inventoryCodeText}>{color.code}</Text>
+        <Text style={[styles.muted, styles.inventoryColorMeta]}>
+          {color.nameZh || color.nameEn || '参考色名缺失'}
+          {color.nameEn && color.nameEn !== color.code ? ` · ${color.nameEn}` : ''}
+        </Text>
+      </View>
+      <View style={styles.right}>
+        <Text style={styles.inventoryQuantity}>{stock}</Text>
+        <Text style={[styles.miniLabel, low && styles.lowText]}>{low ? '低库存' : '颗'}</Text>
+      </View>
+    </Pressable>
+  );
+});
 
 function ProjectsScreen({
   data,
@@ -1636,6 +1812,9 @@ function ProjectsScreen({
   const [ocrProgress, setOcrProgress] = useState<OcrProgressState | undefined>();
   const [editingProjectName, setEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
+  const [ocrTextEditorVisible, setOcrTextEditorVisible] = useState(false);
+  const [ocrTextDraft, setOcrTextDraft] = useState('');
   const projectNameCommitGuardRef = useRef(false);
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
@@ -1798,11 +1977,17 @@ function ProjectsScreen({
       const ocrReady = await prepareCroppedImageForOcr(cropped.uri);
       const croppedImageUri = await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop');
       setPendingCropImageUri(undefined);
+      const projectId = selectedProject.id;
+      const projectName = selectedProject.name;
       const ocrResult = await recognizePatternDraft(croppedImageUri, { settings: data.settings, onProgress: ({ stage }) => updateOcrStage(stage) });
-      const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
-      saveProject(
-        {
-          ...selectedProject,
+      // OCR can run for tens of seconds. Merge into the project's LIVE items via the producer:
+      // writing back the pre-OCR copy captured above would overwrite edits made while waiting.
+      updateData((current) => {
+        const live = current.projects.find((project) => project.id === projectId);
+        if (!live) return current;
+        const items = ocrResult.status === 'ready' ? mergeRecognizedItems(live.items, ocrResult.items) : live.items;
+        return upsertProject(current, {
+          ...live,
           imageUri: croppedImageUri,
           originalImageUri,
           croppedImageUri,
@@ -1812,9 +1997,8 @@ function ProjectsScreen({
           ocrEngine: ocrResult.engine,
           ocrUpdatedAt: new Date().toISOString(),
           items,
-        },
-        `${selectedProject.name} 裁剪并 OCR`,
-      );
+        });
+      }, `${projectName} 裁剪并 OCR`);
       setNotice(ocrResult.message);
     } catch (error) {
       setNotice(`裁剪或 OCR 失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -1835,11 +2019,16 @@ function ProjectsScreen({
     try {
       const ocrReady = await prepareCroppedImageForOcr(imageUri);
       const finalImageUri = ocrReady.changed ? await persistProjectImage(selectedProject.id, ocrReady.uri, 'crop') : imageUri;
+      const projectId = selectedProject.id;
+      const projectName = selectedProject.name;
       const ocrResult = await recognizePatternDraft(finalImageUri, { settings: data.settings, onProgress: ({ stage }) => updateOcrStage(stage) });
-      const items = ocrResult.status === 'ready' ? mergeRecognizedItems(selectedProject.items, ocrResult.items) : selectedProject.items;
-      saveProject(
-        {
-          ...selectedProject,
+      // Same live-items merge as confirmCropAndRecognize: never write back the stale copy.
+      updateData((current) => {
+        const live = current.projects.find((project) => project.id === projectId);
+        if (!live) return current;
+        const items = ocrResult.status === 'ready' ? mergeRecognizedItems(live.items, ocrResult.items) : live.items;
+        return upsertProject(current, {
+          ...live,
           imageUri: finalImageUri,
           croppedImageUri: finalImageUri,
           ocrStatus: ocrResult.status,
@@ -1848,9 +2037,8 @@ function ProjectsScreen({
           ocrEngine: ocrResult.engine,
           ocrUpdatedAt: new Date().toISOString(),
           items,
-        },
-        `${selectedProject.name} OCR 识别`,
-      );
+        });
+      }, `${projectName} OCR 识别`);
       setNotice(ocrResult.message);
     } catch (error) {
       setNotice(`OCR 识别失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -1889,6 +2077,54 @@ function ProjectsScreen({
         ? `已扣库存；其中 ${deductMissingTotal} 颗库存不足，相关色号已扣到 0`
         : `已按当前用量扣除库存；累计扣除 ${projectDeductCount + 1} 次`,
     );
+  };
+
+  const confirmDeleteProject = () => {
+    if (!selectedProject) return;
+    const projectName = selectedProject.name;
+    updateData((current) => deleteProject(current, selectedProject.id), `删除图纸：${projectName}`);
+    setSelectedId(data.projects.find((project) => project.id !== selectedProject.id)?.id);
+    setDeleteConfirmVisible(false);
+    setNotice(`已删除图纸「${projectName}」`);
+  };
+
+  const openOcrTextEditor = () => {
+    if (!selectedProject) return;
+    setOcrTextDraft(selectedProject.ocrRawText ?? '');
+    setOcrTextEditorVisible(true);
+  };
+
+  // Escape hatch when remote OCR misfires: the user can inspect the raw OCR text, fix it (or
+  // paste text from any other OCR tool), and re-run the local parser without another API call.
+  const reparseOcrText = async () => {
+    if (!selectedProject) return;
+    const projectId = selectedProject.id;
+    const projectName = selectedProject.name;
+    const rawText = ocrTextDraft.trim();
+    if (!rawText) {
+      setNotice('OCR 文本为空，无法解析');
+      return;
+    }
+    const result = await recognizePatternDraft('', { settings: data.settings, rawText });
+    updateData(
+      (current) => {
+        const live = current.projects.find((project) => project.id === projectId);
+        if (!live) return current;
+        const items = result.status === 'ready' ? mergeRecognizedItems(live.items, result.items) : live.items;
+        return upsertProject(current, {
+          ...live,
+          ocrStatus: result.status,
+          ocrMessage: result.message,
+          ocrRawText: rawText,
+          ocrEngine: result.engine ?? 'manual-text',
+          ocrUpdatedAt: new Date().toISOString(),
+          items,
+        });
+      },
+      `${projectName} 手动解析 OCR 文本`,
+    );
+    setOcrTextEditorVisible(false);
+    setNotice(result.message);
   };
 
   return (
@@ -1943,13 +2179,7 @@ function ProjectsScreen({
                 {selectedProject.items.length} 个颜色 · {projectDeductCount ? `已扣 ${projectDeductCount} 次` : '规划中，未扣库存'}
               </Text>
             </View>
-            <Pressable
-              style={styles.textButton}
-              onPress={() => {
-                updateData((current) => deleteProject(current, selectedProject.id), `删除图纸：${selectedProject.name}`);
-                setSelectedId(data.projects.find((project) => project.id !== selectedProject.id)?.id);
-              }}
-            >
+            <Pressable style={styles.textButton} accessibilityLabel="删除当前图纸" onPress={() => setDeleteConfirmVisible(true)}>
               <Text style={styles.dangerText}>删除</Text>
             </Pressable>
           </View>
@@ -1969,6 +2199,7 @@ function ProjectsScreen({
             <ActionButton label="上传并裁剪图纸" onPress={pickAndCropPatternImage} tone="neutral" />
             {selectedProject.originalImageUri ? <ActionButton label="重新裁剪原图" onPress={reopenCropFromOriginal} tone="neutral" /> : null}
             {selectedProject.imageUri ? <ActionButton label="查看识别图" onPress={openRecognitionImage} tone="neutral" /> : null}
+            <ActionButton label="OCR 文本" onPress={openOcrTextEditor} tone="neutral" />
             <ActionButton label="识别裁剪图" onPress={recognizeCroppedPattern} tone="amber" />
             <ActionButton label="一键扣库存" onPress={openDeductPreview} tone="danger" />
           </View>
@@ -2077,6 +2308,36 @@ function ProjectsScreen({
         onConfirm={confirmCropAndRecognize}
       />
       <RecognitionImagePreview uri={recognitionPreviewUri} onClose={() => setRecognitionPreviewUri(undefined)} />
+      <ConfirmPrompt
+        visible={deleteConfirmVisible}
+        title="删除图纸"
+        message={`确认删除「${selectedProject?.name ?? ''}」？其中的用量草稿会一并删除，删除后可通过提示条或历史操作撤销。`}
+        confirmLabel="确认删除"
+        onCancel={() => setDeleteConfirmVisible(false)}
+        onConfirm={confirmDeleteProject}
+      />
+      <Modal visible={ocrTextEditorVisible} transparent animationType="fade" onRequestClose={() => setOcrTextEditorVisible(false)}>
+        <View style={styles.promptBackdrop}>
+          <View style={styles.promptPanel}>
+            <Text style={styles.panelTitle}>OCR 文本</Text>
+            <Text style={styles.muted}>
+              这里是识别到的原始文本，可以手工修正后重新解析；也可以把其他工具识别出的文本粘贴进来，解析结果会合并进用量草稿。
+            </Text>
+            <TextInput
+              style={[styles.input, styles.ocrTextInput]}
+              value={ocrTextDraft}
+              onChangeText={setOcrTextDraft}
+              multiline
+              placeholder="例如：G2 x12"
+              accessibilityLabel="OCR 原始文本"
+            />
+            <View style={styles.promptActions}>
+              <ActionButton label="关闭" onPress={() => setOcrTextEditorVisible(false)} tone="neutral" />
+              <ActionButton label="重新解析" onPress={() => void reparseOcrText()} tone="amber" />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -2097,6 +2358,7 @@ function ShoppingScreen({
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>(data.projects.map((project) => project.id));
   const [editingListName, setEditingListName] = useState(false);
   const [listNameDraft, setListNameDraft] = useState('');
+  const [deleteListConfirmVisible, setDeleteListConfirmVisible] = useState(false);
   const listNameCommitGuardRef = useRef(false);
 
   const selectedList = data.purchaseLists.find((list) => list.id === selectedListId) ?? data.purchaseLists[0];
@@ -2138,8 +2400,14 @@ function ShoppingScreen({
 
   const removeList = () => {
     if (!selectedList) return;
+    setDeleteListConfirmVisible(true);
+  };
+
+  const confirmRemoveList = () => {
+    if (!selectedList) return;
     updateData((current) => deletePurchaseList(current, selectedList.id), `删除采购表：${selectedList.name}`);
-    setNotice('采购表已删除，可通过历史操作撤销');
+    setDeleteListConfirmVisible(false);
+    setNotice('采购表已删除');
   };
 
   const updateSelectedList = (patch: Partial<PurchaseList>, label = selectedList ? `更新采购表：${selectedList.name}` : '更新采购表') => {
@@ -2201,8 +2469,12 @@ function ShoppingScreen({
       setNotice('当前采购表没有采购项');
       return;
     }
-    await Clipboard.setStringAsync(purchaseText);
-    setNotice('采购清单已复制');
+    try {
+      await Clipboard.setStringAsync(purchaseText);
+      setNotice('采购清单已复制');
+    } catch {
+      setNotice('复制失败，请检查浏览器剪贴板权限后重试');
+    }
   };
 
   const toggleProject = (projectId: string) => {
@@ -2230,6 +2502,7 @@ function ShoppingScreen({
   };
 
   return (
+    <>
     <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>采购表</Text>
@@ -2398,6 +2671,15 @@ function ShoppingScreen({
         </>
       ) : null}
     </ScrollView>
+    <ConfirmPrompt
+      visible={deleteListConfirmVisible}
+      title="删除采购表"
+      message={`确认删除「${selectedList?.name ?? ''}」？其中的采购项会一并删除，删除后可通过提示条或历史操作撤销。`}
+      confirmLabel="确认删除"
+      onCancel={() => setDeleteListConfirmVisible(false)}
+      onConfirm={confirmRemoveList}
+    />
+    </>
   );
 }
 
@@ -2436,6 +2718,7 @@ function SettingsScreen({
   const [accountPassword, setAccountPassword] = useState('');
   const [accountRecoveryEmail, setAccountRecoveryEmail] = useState('');
   const [restorePromptVisible, setRestorePromptVisible] = useState(false);
+  const [pendingImportData, setPendingImportData] = useState<AppData | null>(null);
   const [resetCountdown, setResetCountdown] = useState(0);
   const [resetReady, setResetReady] = useState(false);
   const activeVisionPreset = findAiPreset(VISION_MODEL_PRESETS, aiOcrEndpoint, aiOcrModel);
@@ -2617,10 +2900,14 @@ function SettingsScreen({
       return;
     }
     if (accountMode === 'sign-up') {
-      void accountActions.signUp(accountUsername, accountPassword, accountRecoveryEmail).then(() => setAccountPassword(''));
+      void accountActions.signUp(accountUsername, accountPassword, accountRecoveryEmail).then((ok) => {
+        if (ok) setAccountPassword('');
+      });
       return;
     }
-    void accountActions.signIn(accountUsername, accountPassword).then(() => setAccountPassword(''));
+    void accountActions.signIn(accountUsername, accountPassword).then((ok) => {
+      if (ok) setAccountPassword('');
+    });
   };
 
   const confirmCloudRestore = () => {
@@ -2643,8 +2930,12 @@ function SettingsScreen({
   };
 
   const copyBackup = async () => {
-    await Clipboard.setStringAsync(exportAppData(data));
-    setNotice('备份数据已复制到剪贴板');
+    try {
+      await Clipboard.setStringAsync(exportAppData(data));
+      setNotice('备份数据已复制到剪贴板');
+    } catch {
+      setNotice('复制失败，请检查浏览器剪贴板权限后重试');
+    }
   };
 
   const exportBackup = async () => {
@@ -2652,24 +2943,29 @@ function SettingsScreen({
     setNotice(exported);
   };
 
+  // The confirm dialog is a self-drawn ConfirmPrompt: RN-web ships Alert.alert as a no-op, so
+  // the previous Alert-based confirmation silently did nothing on the web build.
   const importBackup = async () => {
-    const raw = await Clipboard.getStringAsync();
+    let raw = '';
+    try {
+      raw = await Clipboard.getStringAsync();
+    } catch {
+      setNotice('无法读取剪贴板，请检查浏览器剪贴板权限');
+      return;
+    }
     const parsed = parseImportedData(raw);
     if (!parsed) {
       setNotice('剪贴板里不是有效的豆仓备份 JSON');
       return;
     }
-    Alert.alert('导入备份', '导入会覆盖当前本地数据。确定继续吗？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '确认导入',
-        style: 'destructive',
-        onPress: () => {
-          updateData(() => parsed, '导入备份');
-          setNotice('已导入备份');
-        },
-      },
-    ]);
+    setPendingImportData(parsed);
+  };
+
+  const confirmImportBackup = () => {
+    if (!pendingImportData) return;
+    updateData(() => pendingImportData, '导入备份');
+    setPendingImportData(null);
+    setNotice('已导入备份');
   };
 
   const resetLocalData = () => {
@@ -2980,6 +3276,14 @@ function SettingsScreen({
         setRestorePromptVisible(false);
         void accountActions.restoreCloud();
       }}
+    />
+    <ConfirmPrompt
+      visible={Boolean(pendingImportData)}
+      title="导入备份"
+      message="导入会覆盖当前本地数据（可通过历史操作撤销）。确定继续吗？"
+      confirmLabel="确认导入"
+      onCancel={() => setPendingImportData(null)}
+      onConfirm={confirmImportBackup}
     />
     </>
   );
@@ -3899,6 +4203,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
   },
+  badgeActive: {
+    backgroundColor: '#0F7A62',
+    borderColor: '#BDEBD9',
+  },
   badgeText: {
     color: '#A8F0D3',
     fontWeight: '900',
@@ -4431,6 +4739,44 @@ const styles = StyleSheet.create({
   },
   toolbar: {
     marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  lowFilterChip: {
+    minHeight: 42,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.white,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  lowFilterChipActive: {
+    backgroundColor: colors.panelDark,
+    borderColor: colors.panelDark,
+  },
+  lowFilterText: {
+    color: colors.inkSoft,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  lowFilterTextActive: {
+    color: colors.white,
+  },
+  countLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  ocrTextInput: {
+    minHeight: 160,
+    maxHeight: 300,
+    textAlignVertical: 'top',
+    paddingTop: 10,
+    fontFamily: fonts.mono,
+    fontSize: 13,
   },
   frozenFilters: {
     marginBottom: 8,
