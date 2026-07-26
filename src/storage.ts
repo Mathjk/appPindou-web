@@ -2,34 +2,60 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 import { createEmptyData, createPurchaseList } from './domain';
-import type { ActionHistoryEntry, AppData, AppDataSnapshot, InventoryEntry, PatternProject } from './types';
+import type { ActionHistoryEntry, AppData, AppDataCore, AppDataSnapshot, InventoryEntry, PatternProject } from './types';
 
 const STORAGE_KEY = 'appPindou:data:v1';
 
-export async function loadAppData(): Promise<AppData> {
+export type LoadAppDataResult = {
+  data: AppData;
+  recoveredFromCorrupt?: boolean;
+};
+
+export async function loadAppData(): Promise<LoadAppDataResult> {
   const raw = await AsyncStorage.getItem(STORAGE_KEY);
-  if (!raw) return createEmptyData();
+  if (!raw) return { data: createEmptyData() };
   try {
     const parsed = JSON.parse(raw) as AppData;
-    if (parsed.version !== 1) return createEmptyData();
-    return normalizeAppData(parsed);
+    if (parsed.version !== 1) {
+      await backupCorruptRaw(raw);
+      return { data: createEmptyData(), recoveredFromCorrupt: true };
+    }
+    return { data: normalizeAppData(parsed) };
   } catch {
-    return createEmptyData();
+    await backupCorruptRaw(raw);
+    return { data: createEmptyData(), recoveredFromCorrupt: true };
   }
 }
 
-export async function saveAppData(data: AppData) {
+// An interrupted write (killed mobile tab) can leave a truncated JSON blob behind. Resetting
+// to empty data is the only way to boot, but the very next auto-save would overwrite the blob
+// and destroy any chance of manual recovery — so stash the raw payload under a separate key first.
+async function backupCorruptRaw(raw: string) {
+  try {
+    await AsyncStorage.setItem(`${STORAGE_KEY}:corrupt-${Date.now()}`, raw);
+  } catch {
+    // Best-effort: never block startup on preserving the corrupt payload.
+  }
+}
+
+export type SaveAppDataResult = {
+  trimmedHistory: boolean;
+};
+
+export async function saveAppData(data: AppData): Promise<SaveAppDataResult> {
   const persistable = prepareAppDataForPersistence(data);
   try {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(persistable));
+    return { trimmedHistory: false };
   } catch (error) {
     // If storage is full (e.g. localStorage quota on web), retry without the action history,
     // which is the only unbounded, non-essential part of the payload. Inventory, projects,
-    // and purchase lists are preserved.
+    // and purchase lists are preserved. Callers should surface trimmedHistory to the user —
+    // their undo list survives in memory but will be gone after the next reload.
     if (isQuotaError(error)) {
       const trimmed: AppData = { ...persistable, actionHistory: [] };
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-      return;
+      return { trimmedHistory: true };
     }
     throw error;
   }
@@ -64,6 +90,44 @@ function isQuotaError(error: unknown) {
 
 export function prepareAppDataForPersistence(data: AppData): AppData {
   return prepareDataForStorage(data);
+}
+
+// Cloud snapshots leave the device, so they must not carry third-party API keys: keys are
+// device-local configuration, not data worth restoring elsewhere, and RLS only shields rows
+// from other users — not from a leaked dump or an over-privileged backend key. The action
+// history is also dropped: it is bulky per-device undo state whose before/after settings
+// snapshots would smuggle keys right back in.
+export function prepareAppDataForCloud(data: AppData): AppDataCore {
+  const persistable = prepareDataForStorage(data);
+  return {
+    version: persistable.version,
+    settings: redactSettings(persistable.settings),
+    inventory: persistable.inventory,
+    stockLogs: persistable.stockLogs,
+    projects: persistable.projects,
+    purchaseLists: persistable.purchaseLists,
+  };
+}
+
+// Restoring a cloud snapshot must not wipe the keys the user typed on this device: cloud
+// snapshots store empty key fields (see prepareAppDataForCloud), so keep local values wherever
+// the restored snapshot has none.
+export function mergeDeviceKeysIntoSettings(restored: AppData['settings'], local: AppData['settings']): AppData['settings'] {
+  return {
+    ...restored,
+    aiOcrApiKey: restored.aiOcrApiKey || local.aiOcrApiKey,
+    aiOcrTextApiKey: restored.aiOcrTextApiKey || local.aiOcrTextApiKey,
+    aiOcrProviderKeys: mergeKeyMaps(local.aiOcrProviderKeys, restored.aiOcrProviderKeys),
+    aiOcrTextProviderKeys: mergeKeyMaps(local.aiOcrTextProviderKeys, restored.aiOcrTextProviderKeys),
+  };
+}
+
+function mergeKeyMaps(local: Record<string, string>, restored: Record<string, string>) {
+  const merged = { ...local };
+  for (const [service, key] of Object.entries(restored ?? {})) {
+    if (key) merged[service] = key;
+  }
+  return merged;
 }
 
 export function normalizeLoadedAppData(data: Partial<AppData>): AppData {
@@ -216,7 +280,9 @@ function normalizeSnapshot(snapshot: AppDataSnapshot & { inventory?: AppData['in
       projectSafetyBuffer: normalizeProjectSafetyBuffer(snapshot.settings?.projectSafetyBuffer, empty.settings.projectSafetyBuffer),
     },
     inventory: normalizeInventory(snapshot.inventory),
-    stockLogs: Array.isArray(snapshot.stockLogs) ? snapshot.stockLogs : [],
+    // History snapshots no longer carry stock logs (see snapshotAppData in domain.ts); dropping
+    // them from legacy entries here shrinks previously bloated storage on the next save.
+    stockLogs: [],
     // Drop any image data URLs carried by legacy history snapshots so previously bloated
     // localStorage shrinks on next save (see stripProjectImages in domain.ts).
     projects: normalizeSnapshotProjects(snapshot.projects),

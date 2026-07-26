@@ -3,7 +3,7 @@ import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type Session, type User } from '@supabase/supabase-js';
 
-import { normalizeLoadedAppData, prepareAppDataForPersistence } from './storage';
+import { normalizeLoadedAppData, prepareAppDataForCloud } from './storage';
 import type { AppData } from './types';
 
 const SUPABASE_URL = 'https://bjgxzxblwzwdsdgxznps.supabase.co';
@@ -182,7 +182,7 @@ export async function fetchCloudSnapshotMeta() {
 export async function saveCloudSnapshot(data: AppData) {
   const user = await requireCurrentUser();
   const clientUpdatedAt = new Date().toISOString();
-  const snapshot = prepareAppDataForPersistence(data);
+  const snapshot = prepareAppDataForCloud(data);
   const { data: row, error } = await supabase
     .from('app_snapshots')
     .upsert(

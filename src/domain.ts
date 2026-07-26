@@ -65,7 +65,10 @@ export function snapshotAppData(data: AppData | AppDataSnapshot): AppDataSnapsho
       version: data.version,
       settings: data.settings,
       inventory: data.inventory,
-      stockLogs: data.stockLogs,
+      // Stock logs are an append-only audit trail: undo never reads them, and rollback keeps
+      // the live trail (see rollbackToHistoryEntry). Carrying up to 500 log entries in every
+      // before/after pair was the main reason history overflowed the ~5MB localStorage quota.
+      stockLogs: [],
       projects: data.projects.map(stripProjectImages),
       purchaseLists: data.purchaseLists,
     }),
@@ -122,8 +125,9 @@ export function undoSingleHistoryEntry(data: AppData, historyId: string): AppDat
 }
 
 export function rollbackToHistoryEntry(data: AppData, historyId: string): AppData {
-  const entry = data.actionHistory.find((item) => item.id === historyId);
-  if (!entry) return data;
+  const entryIndex = data.actionHistory.findIndex((item) => item.id === historyId);
+  if (entryIndex === -1) return data;
+  const entry = data.actionHistory[entryIndex];
   const now = new Date().toISOString();
   const restored = snapshotAppData(entry.before);
   // Snapshots no longer store image data URLs, so re-attach the current image fields to any
@@ -131,6 +135,8 @@ export function rollbackToHistoryEntry(data: AppData, historyId: string): AppDat
   const currentImagesById = new Map(data.projects.map((project) => [project.id, project]));
   return {
     ...restored,
+    // Snapshots don't carry stock logs; the audit trail is append-only and survives rollback.
+    stockLogs: data.stockLogs,
     projects: restored.projects.map((project) => {
       const current = currentImagesById.get(project.id);
       if (!current) return project;
@@ -141,7 +147,10 @@ export function rollbackToHistoryEntry(data: AppData, historyId: string): AppDat
         croppedImageUri: current.croppedImageUri,
       };
     }),
-    actionHistory: data.actionHistory.map((item) => (item.createdAt >= entry.createdAt ? { ...item, undoneAt: item.undoneAt ?? now } : item)),
+    // The list is newest-first, so everything at or before entryIndex happened at or after this
+    // entry. Index order is authoritative — createdAt comparisons mislabel entries that share a
+    // millisecond.
+    actionHistory: data.actionHistory.map((item, index) => (index <= entryIndex ? { ...item, undoneAt: item.undoneAt ?? now } : item)),
   };
 }
 
