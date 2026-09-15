@@ -87,16 +87,26 @@ const LAB_DELTA_CUBE = LAB_DELTA * LAB_DELTA * LAB_DELTA;
 const LAB_LINEAR_DENOM = 3 * LAB_DELTA * LAB_DELTA;
 
 /** Edge cells within this CIE Lab distance of the corner background color are removed. */
-const EDGE_BG_LAB_THRESHOLD = 20;
+const EDGE_BG_LAB_THRESHOLD = 15;
 const EDGE_BG_LAB_THRESHOLD_SQ = EDGE_BG_LAB_THRESHOLD * EDGE_BG_LAB_THRESHOLD;
-/** A cell may also join the background flood when it is within this Lab distance of an
- * already-removed neighbor — provided it still stays within EDGE_BG_LAB_HARD of the
- * background color. Lets the flood follow textured/gradient backgrounds without
- * unbounded drift into the subject. */
-const EDGE_BG_NEIGHBOR_LAB = 6;
-const EDGE_BG_NEIGHBOR_LAB_SQ = EDGE_BG_NEIGHBOR_LAB * EDGE_BG_NEIGHBOR_LAB;
-const EDGE_BG_LAB_HARD = 30;
-const EDGE_BG_LAB_HARD_SQ = EDGE_BG_LAB_HARD * EDGE_BG_LAB_HARD;
+/** Edge cells are clustered into at most this many background color seeds, so a
+ * gradient or two-tone backdrop still floods cleanly - while every candidate cell
+ * is judged directly against a seed, so the flood can never chain its way through
+ * a soft gradient into the subject. */
+const EDGE_BG_MAX_CLUSTERS = 3;
+/** After flooding, connected components of kept cells smaller than this are debris. */
+const EDGE_BG_ISLAND_MIN = 8;
+const EDGE_BG_ISLAND_FRACTION = 0.015;
+/**
+ * Majority smoothing adopts a neighbor color only within this Lab distance when
+ * the cell still has same-colored neighbors (a plausible detail). Cells with NO
+ * same-colored 8-neighbor are pure speckle and always follow the majority.
+ */
+const SMOOTH_DETAIL_LAB = 24;
+const SMOOTH_DETAIL_LAB_SQ = SMOOTH_DETAIL_LAB * SMOOTH_DETAIL_LAB;
+/** Snapped cluster centers closer than this are treated as one bead color. */
+const CENTER_DEDUP_LAB = 8;
+const CENTER_DEDUP_LAB_SQ = CENTER_DEDUP_LAB * CENTER_DEDUP_LAB;
 
 /** Mean alpha byte below which a sampled cell counts as transparent. */
 const ALPHA_THRESHOLD = 128;
@@ -160,13 +170,101 @@ function paletteLabDistanceSq(lab: Float64Array, a: number, b: number): number {
   );
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+/** Deterministic PRNG (mulberry32) so k-means seeding is stable across runs. */
+function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 /**
+ * K-means over cell Lab values (k-means++ init, Lloyd iterations, fixed seed).
+ * `indices` selects which cells participate. Returns k*3 centroid floats;
+ * empty clusters keep their last position and dedupe later at palette snap.
+ */
+export function clusterCellColors(indices: number[], cellLab: Float64Array, k: number): Float64Array {
+  const rand = mulberry32(0x9e3779b9);
+  const centers = new Float64Array(k * 3);
+  const first = indices[Math.floor(rand() * indices.length)]!;
+  centers[0] = cellLab[first * 3]!;
+  centers[1] = cellLab[first * 3 + 1]!;
+  centers[2] = cellLab[first * 3 + 2]!;
+  const distToNearest = new Float64Array(indices.length).fill(Infinity);
+  for (let c = 1; c < k; c++) {
+    let total = 0;
+    for (let pi = 0; pi < indices.length; pi++) {
+      const i = indices[pi]!;
+      const d = labDistanceSq(
+        cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+        centers[(c - 1) * 3]!, centers[(c - 1) * 3 + 1]!, centers[(c - 1) * 3 + 2]!,
+      );
+      if (d < distToNearest[pi]!) distToNearest[pi] = d;
+      total += distToNearest[pi]!;
+    }
+    let pick = indices[0]!;
+    if (total > 0) {
+      let r = rand() * total;
+      for (let pi = 0; pi < indices.length; pi++) {
+        r -= distToNearest[pi]!;
+        if (r <= 0) {
+          pick = indices[pi]!;
+          break;
+        }
+      }
+    }
+    centers[c * 3] = cellLab[pick * 3]!;
+    centers[c * 3 + 1] = cellLab[pick * 3 + 1]!;
+    centers[c * 3 + 2] = cellLab[pick * 3 + 2]!;
+  }
+  const assign = new Int32Array(indices.length).fill(-1);
+  const cnt = new Uint32Array(k);
+  for (let iter = 0; iter < 15; iter++) {
+    let moved = 0;
+    const sumL = new Float64Array(k);
+    const sumA = new Float64Array(k);
+    const sumB = new Float64Array(k);
+    cnt.fill(0);
+    for (let pi = 0; pi < indices.length; pi++) {
+      const i = indices[pi]!;
+      let best = 0;
+      let bd = Infinity;
+      for (let c = 0; c < k; c++) {
+        const d = labDistanceSq(
+          cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+          centers[c * 3]!, centers[c * 3 + 1]!, centers[c * 3 + 2]!,
+        );
+        if (d < bd) {
+          bd = d;
+          best = c;
+        }
+      }
+      if (assign[pi] !== best) {
+        assign[pi] = best;
+        moved++;
+      }
+      sumL[best] += cellLab[i * 3]!;
+      sumA[best] += cellLab[i * 3 + 1]!;
+      sumB[best] += cellLab[i * 3 + 2]!;
+      cnt[best]++;
+    }
+    for (let c = 0; c < k; c++) {
+      if (cnt[c]! > 0) {
+        centers[c * 3] = sumL[c]! / cnt[c]!;
+        centers[c * 3 + 1] = sumA[c]! / cnt[c]!;
+        centers[c * 3 + 2] = sumB[c]! / cnt[c]!;
+      }
+    }
+    if (moved === 0) break;
+  }
+  return centers;
+}
+
+/**
+ * Palette indices usable under a scope/**
  * Palette indices usable under a scope, in MARD_291_COLORS order.
  * 'all' -> every color; 'mard221' -> inMard221 colors; 'inventory' -> codes present in inventoryCodes.
  */
@@ -191,17 +289,20 @@ export function usablePaletteIndices(scope: PaletteScope = 'all', inventoryCodes
  * 1. Region sampling: each cell takes the dominant cluster color (default) or the
  *    mean RGB of its source rectangle (never single-pixel sampling).
  *    Alpha < 0.5 cells become EMPTY_CELL.
- * 2. Edge background removal (optional): background color = median of all edge
- *    cells; flood-fill from edges where a cell joins if it is close to the
- *    background (Lab < ~18) or close to an already-removed neighbor (Lab < ~8),
- *    so textured/gradient backgrounds still get picked up.
- * 3. Nearest-color matching in CIE Lab space against the scoped palette.
- *    With dither enabled, quantization error diffuses right/down (Floyd-Steinberg).
- * 4. maxColors enforcement: repeatedly merge the pair minimizing
- *    labDistance * (1 + minUsage/totalCells); cells go to the higher-usage color.
- * 5. Isolated-cell cleanup: a cell differing from all present 4-neighbors takes
- *    the most frequent neighbor color; then an optional majority pass lets a cell
- *    adopt a single color shared by >=3 of its 4-neighbors.
+ * 2. Edge background removal (optional): edge cells are clustered into up to 3
+ *    background color seeds; every cell joining the flood must sit within
+ *    Lab ~15 of a seed directly (no neighbor chaining, so soft gradients cannot
+ *    tunnel the flood into the subject). Small disconnected debris islands are
+ *    dropped afterwards.
+ * 3. Palette selection: k-means over the sampled cell colors picks the image's
+ *    own dominant tones (k = maxColors), then snaps centroids to the scoped
+ *    bead palette - the bead colors used are chosen by the image content, not
+ *    by per-cell nearest matching. With dither enabled, quantization error
+ *    diffuses right/down (Floyd-Steinberg) within the selected palette.
+ * 4. Isolated-cell cleanup: a cell differing from all present 4-neighbors takes
+ *    the most frequent neighbor color; then an optional majority pass erases
+ *    speckle (no same-colored 8-neighbor) and near-color noise while preserving
+ *    high-contrast details that span 2+ cells.
  */
 export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): GenerateResult {
   const { width: imgW, height: imgH, data } = image;
@@ -308,12 +409,11 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     cellLab[i * 3 + 2] = b;
   }
 
-  // Step 2: edge background removal — background color is the median of ALL
-  // edge cells (robust when a subject touches a corner), then a flood from the
-  // edges. A cell joins when it is close to the background color outright, or
-  // close to an already-removed neighbor while still within a hard bound of the
-  // background — the second rule follows JPEG noise and gradual gradients that
-  // a flat threshold leaves behind as grey beads.
+  // Step 2: edge background removal - non-empty edge cells are clustered into
+  // up to EDGE_BG_MAX_CLUSTERS background seeds; a cell joins the flood only by
+  // sitting within the Lab threshold of a seed directly. The flood therefore
+  // covers gradients and multi-tone backdrops but can never chain its way into
+  // the subject through a soft transition.
   let removedCells = 0;
   if (options.removeEdgeBackground !== false) {
     const edgeCells: number[] = [];
@@ -327,53 +427,142 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     }
     const opaqueEdge = edgeCells.filter((i) => hasColor[i] === 1);
     if (opaqueEdge.length > 0) {
-      const bgR = median(opaqueEdge.map((i) => workR[i]!));
-      const bgG = median(opaqueEdge.map((i) => workG[i]!));
-      const bgB = median(opaqueEdge.map((i) => workB[i]!));
-      const [bgL, bgA, bgB2] = rgbToLab(bgR, bgG, bgB);
+      const seedK = Math.min(EDGE_BG_MAX_CLUSTERS, opaqueEdge.length);
+      const allSeeds = clusterCellColors(opaqueEdge, cellLab, seedK);
+      // Background seeds are qualified by per-edge support below.
+      // Per-edge support: a seed only counts as background when it covers >=15%
+      // of the opaque cells on at least two distinct borders. A cluster confined
+      // to one border is far more likely an edge-touching subject (a laptop base
+      // on the bottom edge, hair along the top) than a backdrop, so it never
+      // seeds the flood - leftover background can still be tap-erased, but eaten
+      // subject cannot be recovered.
+      const edgeLens = [0, 0, 0, 0]; // opaque cells per border: T B L R
+      const seedEdgeCount = new Uint32Array(seedK * 4);
+      for (const i of opaqueEdge) {
+        const edges: number[] = [];
+        if (i < gridW) edges.push(0);
+        if (i >= (gridH - 1) * gridW) edges.push(1);
+        if (i % gridW === 0) edges.push(2);
+        if (i % gridW === gridW - 1) edges.push(3);
+        for (const e of edges) edgeLens[e]++;
+        let best = 0;
+        let bd = Infinity;
+        for (let s = 0; s < seedK; s++) {
+          const d = labDistanceSq(
+            cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+            allSeeds[s * 3]!, allSeeds[s * 3 + 1]!, allSeeds[s * 3 + 2]!,
+          );
+          if (d < bd) {
+            bd = d;
+            best = s;
+          }
+        }
+        for (const e of edges) seedEdgeCount[best * 4 + e]++;
+      }
+      const qualified = [...Array(seedK).keys()].filter(
+        (s) => [0, 1, 2, 3].filter((e) => seedEdgeCount[s * 4 + e]! >= edgeLens[e]! * 0.15).length >= 2,
+      );
+      const seeds = new Float64Array(qualified.length * 3);
+      qualified.forEach((s, qi) => {
+        seeds[qi * 3] = allSeeds[s * 3]!;
+        seeds[qi * 3 + 1] = allSeeds[s * 3 + 1]!;
+        seeds[qi * 3 + 2] = allSeeds[s * 3 + 2]!;
+      });
+      const seedCount = qualified.length;
       const queued = new Uint8Array(cellCount);
       const queue: number[] = [];
-      const tryVisit = (i: number, fromI: number) => {
-        if (hasColor[i] !== 1 || queued[i] === 1) return;
-        const dBg = labDistanceSq(cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!, bgL, bgA, bgB2);
-        let join = dBg < EDGE_BG_LAB_THRESHOLD_SQ;
-        if (!join && fromI >= 0 && dBg < EDGE_BG_LAB_HARD_SQ) {
-          const dNeighbor = labDistanceSq(
-            cellLab[i * 3]!,
-            cellLab[i * 3 + 1]!,
-            cellLab[i * 3 + 2]!,
-            cellLab[fromI * 3]!,
-            cellLab[fromI * 3 + 1]!,
-            cellLab[fromI * 3 + 2]!,
+      const nearSeed = (i: number): boolean => {
+        for (let s = 0; s < seedCount; s++) {
+          const d2 = labDistanceSq(
+            cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+            seeds[s * 3]!, seeds[s * 3 + 1]!, seeds[s * 3 + 2]!,
           );
-          join = dNeighbor < EDGE_BG_NEIGHBOR_LAB_SQ;
+          if (d2 < EDGE_BG_LAB_THRESHOLD_SQ) return true;
         }
-        if (join) {
+        return false;
+      };
+      const tryVisit = (i: number) => {
+        if (hasColor[i] !== 1 || queued[i] === 1) return;
+        if (nearSeed(i)) {
           queued[i] = 1;
           queue.push(i);
         }
       };
-      for (const i of edgeCells) tryVisit(i, -1);
+      if (seedCount > 0) {
+      for (const i of edgeCells) tryVisit(i);
       while (queue.length > 0) {
         const i = queue.pop()!;
         hasColor[i] = 0;
         removedCells++;
         const cx = i % gridW;
         const cy = (i / gridW) | 0;
-        if (cx > 0) tryVisit(i - 1, i);
-        if (cx < gridW - 1) tryVisit(i + 1, i);
-        if (cy > 0) tryVisit(i - gridW, i);
-        if (cy < gridH - 1) tryVisit(i + gridW, i);
+        if (cx > 0) tryVisit(i - 1);
+        if (cx < gridW - 1) tryVisit(i + 1);
+        if (cy > 0) tryVisit(i - gridW);
+        if (cy < gridH - 1) tryVisit(i + gridW);
+      }
+      }
+
+      // Drop debris: (a) tiny disconnected islands of kept cells - leftovers
+      // that survived the flood; (b) edge-touching remnants much smaller than
+      // the main subject - background shreds whose color never matched a seed
+      // but stayed attached to the border. Interior components and any
+      // component comparable to the largest one always survive.
+      let kept = 0;
+      for (let i = 0; i < cellCount; i++) if (hasColor[i] === 1) kept++;
+      const islandLimit = Math.max(EDGE_BG_ISLAND_MIN, Math.floor(kept * EDGE_BG_ISLAND_FRACTION));
+      const seen = new Uint8Array(cellCount);
+      const comps: Array<{ cells: number[]; touchesEdge: boolean }> = [];
+      for (let start = 0; start < cellCount; start++) {
+        if (hasColor[start] !== 1 || seen[start] === 1) continue;
+        const cells2: number[] = [];
+        let touchesEdge = false;
+        const stack = [start];
+        seen[start] = 1;
+        while (stack.length > 0) {
+          const i = stack.pop()!;
+          cells2.push(i);
+          const cx = i % gridW;
+          const cy = (i / gridW) | 0;
+          if (cx === 0 || cy === 0 || cx === gridW - 1 || cy === gridH - 1) touchesEdge = true;
+          const nb = (j: number) => {
+            if (hasColor[j] === 1 && seen[j] !== 1) {
+              seen[j] = 1;
+              stack.push(j);
+            }
+          };
+          if (cx > 0) nb(i - 1);
+          if (cx < gridW - 1) nb(i + 1);
+          if (cy > 0) nb(i - gridW);
+          if (cy < gridH - 1) nb(i + gridW);
+        }
+        comps.push({ cells: cells2, touchesEdge });
+      }
+      let largest = 0;
+      for (const c of comps) if (c.cells.length > largest) largest = c.cells.length;
+      const remnantLimit = Math.max(islandLimit, Math.floor(largest * 0.25));
+      for (const c of comps) {
+        const drop = c.cells.length < islandLimit || (c.touchesEdge && c.cells.length < remnantLimit && c.cells.length < largest);
+        if (!drop) continue;
+        for (const i of c.cells) {
+          hasColor[i] = 0;
+          removedCells++;
+        }
       }
     }
   }
 
-  // Step 3: nearest-color matching in Lab space over the scoped palette.
+  // Step 3: choose this image's bead palette - k-means over the kept cell colors
+  // (k = min(maxColors, keptCells, paletteSize)) finds the image's own dominant
+  // tones, then each centroid snaps to its nearest allowed bead color. The color
+  // budget goes where the image needs it (several skin tones for a face, pure
+  // outline colors for line art) instead of merging whatever per-cell nearest
+  // matching happened to produce.
   const paletteLab = getPaletteLab();
-  const nearestPalette = (l: number, a: number, b: number): number => {
-    let best = allowed[0]!;
+  const nearestIn = (set: ReadonlyArray<number>, l: number, a: number, b: number): number => {
+    let best = set[0]!;
     let bestD = Number.POSITIVE_INFINITY;
-    for (const p of allowed) {
+    for (const p of set) {
       const d = labDistanceSq(l, a, b, paletteLab[p * 3]!, paletteLab[p * 3 + 1]!, paletteLab[p * 3 + 2]!);
       if (d < bestD) {
         bestD = d;
@@ -382,10 +571,56 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     }
     return best;
   };
+  const keptIdx: number[] = [];
+  for (let i = 0; i < cellCount; i++) {
+    if (hasColor[i] === 1) keptIdx.push(i);
+  }
+  let selected: number[];
+  if (allowed.length <= maxColors || keptIdx.length <= maxColors) {
+    selected = allowed;
+  } else {
+    const k = Math.min(maxColors, keptIdx.length);
+    const centers = clusterCellColors(keptIdx, cellLab, k);
+    // Snap centroids to bead colors, biggest cluster first; near-duplicate snaps
+    // (Lab < CENTER_DEDUP_LAB) collapse so similar shades don't waste slots.
+    const clusterSize = new Uint32Array(k);
+    for (const i of keptIdx) {
+      let best = 0;
+      let bd = Infinity;
+      for (let c = 0; c < k; c++) {
+        const d = labDistanceSq(
+          cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+          centers[c * 3]!, centers[c * 3 + 1]!, centers[c * 3 + 2]!,
+        );
+        if (d < bd) {
+          bd = d;
+          best = c;
+        }
+      }
+      clusterSize[best]++;
+    }
+    const order = [...Array(k).keys()].sort((a, b) => clusterSize[b]! - clusterSize[a]!);
+    const sel: number[] = [];
+    for (const c of order) {
+      const pIdx = nearestIn(allowed, centers[c * 3]!, centers[c * 3 + 1]!, centers[c * 3 + 2]!);
+      let dup = false;
+      for (const q of sel) {
+        if (q === pIdx || paletteLabDistanceSq(paletteLab, pIdx, q) < CENTER_DEDUP_LAB_SQ) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) sel.push(pIdx);
+    }
+    selected = sel.length > 0 ? sel : allowed;
+  }
+
+  // Step 4: assign every kept cell to its nearest selected bead color.
+  const nearestPalette = (l: number, a: number, b: number): number => nearestIn(selected, l, a, b);
 
   if (options.dither === true) {
-    // Floyd-Steinberg on the sampled float RGB grid. EMPTY cells neither match
-    // nor receive diffused error.
+    // Floyd-Steinberg on the sampled float RGB grid, within the selected palette.
+    // EMPTY cells neither match nor receive diffused error.
     for (let cy = 0; cy < gridH; cy++) {
       for (let cx = 0; cx < gridW; cx++) {
         const i = cy * gridW + cx;
@@ -418,50 +653,7 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     }
   }
 
-  // Step 4: maxColors enforcement — merge the pair minimizing
-  // labDistance * (1 + minUsage/totalCells); the smaller-usage color folds
-  // into the larger one (ties keep the smaller palette index, deterministically).
-  const usage = new Map<number, number>();
-  let nonEmpty = 0;
-  for (let i = 0; i < cellCount; i++) {
-    const v = cells[i]!;
-    if (v !== EMPTY_CELL) {
-      usage.set(v, (usage.get(v) ?? 0) + 1);
-      nonEmpty++;
-    }
-  }
-  while (usage.size > maxColors && usage.size > 1) {
-    const keys = [...usage.keys()].sort((a, b) => a - b);
-    let mergeA = -1;
-    let mergeB = -1;
-    let bestScore = Number.POSITIVE_INFINITY;
-    for (let x = 0; x < keys.length; x++) {
-      for (let y = x + 1; y < keys.length; y++) {
-        const a = keys[x]!;
-        const b = keys[y]!;
-        const score =
-          Math.sqrt(paletteLabDistanceSq(paletteLab, a, b)) *
-          (1 + Math.min(usage.get(a)!, usage.get(b)!) / nonEmpty);
-        if (score < bestScore) {
-          bestScore = score;
-          mergeA = a;
-          mergeB = b;
-        }
-      }
-    }
-    if (mergeA < 0) break;
-    const countA = usage.get(mergeA)!;
-    const countB = usage.get(mergeB)!;
-    const winner = countA >= countB ? mergeA : mergeB;
-    const loser = winner === mergeA ? mergeB : mergeA;
-    for (let i = 0; i < cellCount; i++) {
-      if (cells[i] === loser) cells[i] = winner;
-    }
-    usage.set(winner, countA + countB);
-    usage.delete(loser);
-  }
-
-  // Step 5: isolated-cell cleanup — a cell differing from every present
+  // Step 5: isolated-cell cleanup  // Step 5: isolated-cell cleanup — a cell differing from every present
   // 4-neighbor takes the most frequent neighbor color (snapshot semantics).
   const cleaned = Int32Array.from(cells);
   for (let cy = 0; cy < gridH; cy++) {
@@ -491,11 +683,13 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     }
   }
 
-  // Step 5b: majority smoothing — when >=3 of a cell's 4-neighbors share one
-  // single value different from the cell (including EMPTY), the cell adopts it.
-  // Kills the residual speckle that isolated-cell cleanup cannot reach (a noise
-  // cell that happens to touch one same-colored neighbor survives step 5).
-  // Snapshot semantics; single pass keeps thin 1-cell lines intact.
+  // Step 5b: majority smoothing - a cell adopts a single value shared by >=3 of
+  // its 4-neighbors, with two rules:
+  //   - cells with NO same-valued 8-neighbor are pure speckle -> always adopt
+  //     (this also fills 1-cell holes and erases floating lone beads);
+  //   - cells still attached to a same-colored structure are plausible details
+  //     (eyes, mouth) -> only adopt when the winning neighbor color is close in
+  //     Lab space, so high-contrast details survive.
   if (options.smooth !== false) {
     const smoothed = Int32Array.from(cleaned);
     for (let cy = 0; cy < gridH; cy++) {
@@ -508,8 +702,26 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
         if (cx < gridW - 1) tally(cleaned[i + 1]!);
         if (cy > 0) tally(cleaned[i - gridW]!);
         if (cy < gridH - 1) tally(cleaned[i + gridW]!);
+        let sameColor8 = false;
+        for (let dy = -1; dy <= 1 && !sameColor8; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const ny = cy + dy;
+            const nx = cx + dx;
+            if (ny < 0 || ny >= gridH || nx < 0 || nx >= gridW) continue;
+            if (cleaned[ny * gridW + nx] === own) {
+              sameColor8 = true;
+              break;
+            }
+          }
+        }
         for (const [v, count] of counts) {
-          if (v !== own && count >= 3) {
+          if (v === own || count < 3) continue;
+          let adopt = !sameColor8;
+          if (!adopt && v !== EMPTY_CELL && own !== EMPTY_CELL) {
+            adopt = paletteLabDistanceSq(paletteLab, own, v) < SMOOTH_DETAIL_LAB_SQ;
+          }
+          if (adopt) {
             smoothed[i] = v;
             break;
           }

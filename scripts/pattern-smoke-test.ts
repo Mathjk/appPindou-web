@@ -93,6 +93,7 @@ function nonEmptyCount(grid: BeadGrid): number {
 // Exact palette colors keep every assertion deterministic.
 const RED = { code: 'F5', hex: '#E7002F' };
 const BLUE = { code: 'C8', hex: '#0F54C0' };
+const NEAR_RED = { code: 'F3', hex: '#F74941' };
 const GREEN = { code: 'B2', hex: '#63F347' };
 const YELLOW = { code: 'Q3', hex: '#FFFF00' };
 const WHITE = { code: 'T1', hex: '#FFFFFF' };
@@ -306,17 +307,39 @@ check('dominant sampling snaps a mixed cell to its majority color', () => {
   assert(res.usedColorCount === 2, 'dominant sampling should not invent a third edge color');
 });
 
-check('majority smoothing repaints a speckle with 3+ same-color neighbors', () => {
+check('smoothing erases speckle and near-color noise but keeps contrast details', () => {
   const [rr, rg, rb] = hexRgb(RED.hex);
   const [br, bg, bb] = hexRgb(BLUE.hex);
-  // Vertical red pair at (3,3)-(4,3) in a blue field: each cell has exactly 3 blue
-  // neighbors, so isolated-cleanup alone keeps them but majority smoothing erases both.
-  const img = makeImage(8, 8, (x, y) => (y === 3 && (x === 3 || x === 4) ? [rr, rg, rb, 255] : [br, bg, bb, 255]));
+  // Lone red cell at (3,3) in blue -> erased (isolated cleanup + speckle rule).
+  // Red pair at (5,5)-(6,5) in blue -> each keeps a same-colored neighbor and the
+  // delta to blue is huge -> high-contrast detail survives smoothing.
+  const img = makeImage(8, 8, (x, y) => {
+    if (x === 3 && y === 3) return [rr, rg, rb, 255];
+    if (y === 5 && (x === 5 || x === 6)) return [rr, rg, rb, 255];
+    return [br, bg, bb, 255];
+  });
   const res = generateBeadGrid(img, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false });
-  assert(res.grid.cells[3 * 8 + 3] === indexOf(BLUE.code), 'speckle cell with 3 blue neighbors should adopt blue');
-  assert(res.usedColorCount === 1, 'smoothing should erase the whole speckle pair');
+  assert(res.grid.cells[3 * 8 + 3] === indexOf(BLUE.code), 'lone speckle should be repainted to blue');
+  assert(res.grid.cells[5 * 8 + 5] === indexOf(RED.code), 'detail pair member should survive smoothing');
+  assert(res.grid.cells[5 * 8 + 6] === indexOf(RED.code), 'detail pair member should survive smoothing');
+});
+
+check('smoothing merges near-color pairs and fills one-cell holes', () => {
+  // NEAR_RED (F3, dE ~13 from F5 - beyond centroid dedup but inside smoothing range) field with an F5 pair at (5,5)-(6,5): close in
+  // Lab space -> smoothing merges the pair into the field color; smooth:false keeps it.
+  const [nr, ng, nb] = hexRgb(NEAR_RED.hex);
+  const [rr, rg, rb] = hexRgb(RED.hex);
+  const img = makeImage(8, 8, (x, y) => (y === 5 && (x === 5 || x === 6) ? [rr, rg, rb, 255] : [nr, ng, nb, 255]));
+  const res = generateBeadGrid(img, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false });
+  assert(res.grid.cells[5 * 8 + 5] === indexOf(NEAR_RED.code), 'near-color pair should merge into the field');
   const raw = generateBeadGrid(img, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false, smooth: false });
-  assert(raw.grid.cells[3 * 8 + 3] === indexOf(RED.code), 'smooth:false should keep the pair');
+  assert(raw.grid.cells[5 * 8 + 5] === indexOf(RED.code), 'smooth:false should keep the near-color pair');
+  // One-cell hole: a transparent pixel inside an opaque field is filled by smoothing.
+  const hole = makeImage(8, 8, (x, y) => (x === 4 && y === 4 ? [nr, ng, nb, 0] : [nr, ng, nb, 255]));
+  const filled = generateBeadGrid(hole, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false });
+  assert(filled.grid.cells[4 * 8 + 4] === indexOf(NEAR_RED.code), 'one-cell hole should be filled by smoothing');
+  const unfilled = generateBeadGrid(hole, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false, smooth: false });
+  assert(unfilled.grid.cells[4 * 8 + 4] === EMPTY_CELL, 'smooth:false should keep the hole');
 });
 
 console.log(`pattern smoke tests: ${passed} passed, ${failed} failed`);
