@@ -70,6 +70,11 @@ import {
 } from './src/domain';
 import { recognizePatternDraft } from './src/ocr';
 import { exportAppData, loadAppData, mergeDeviceKeysIntoSettings, parseImportedData, saveAppData } from './src/storage';
+import { GeneratorModal } from './src/pattern/GeneratorModal';
+import type { GeneratorSaveResult } from './src/pattern/GeneratorModal';
+import { GridViewModal } from './src/pattern/GridViewModal';
+import { encodeGrid, gridToItems } from './src/pattern/engine';
+import type { BeadGrid } from './src/pattern/engine';
 import type { AccountProfile } from './src/account';
 import type { AppData, AppSettings, PatternProject, ProjectItem, PurchaseList } from './src/types';
 
@@ -1815,6 +1820,9 @@ function ProjectsScreen({
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [ocrTextEditorVisible, setOcrTextEditorVisible] = useState(false);
   const [ocrTextDraft, setOcrTextDraft] = useState('');
+  const [newProjectModeVisible, setNewProjectModeVisible] = useState(false);
+  const [generatorImageUri, setGeneratorImageUri] = useState<string | undefined>();
+  const [gridViewVisible, setGridViewVisible] = useState(false);
   const projectNameCommitGuardRef = useRef(false);
 
   const selectedProject = data.projects.find((project) => project.id === selectedId) ?? data.projects[0];
@@ -1897,6 +1905,72 @@ function ProjectsScreen({
     setNotice('已创建图纸项目');
   };
 
+  const pickGeneratorPhoto = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setNotice('需要相册权限才能上传照片');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    setGeneratorImageUri(result.assets[0].uri);
+  };
+
+  const chooseNewProjectMode = (mode: 'generated' | 'ocr' | 'blank') => {
+    setNewProjectModeVisible(false);
+    if (mode === 'blank') {
+      addProject();
+      return;
+    }
+    if (mode === 'generated') {
+      void pickGeneratorPhoto();
+      return;
+    }
+    // OCR 模式：先建好项目再走既有的上传→裁剪→识别流程；确认裁剪时按选中项写回。
+    const projectName = makeUniqueName(name.trim() || makeDatedName('新图纸'), data.projects.map((project) => project.name));
+    const project = createProject(projectName);
+    updateData((current) => upsertProject(current, project), `新建图纸：${project.name}`);
+    setSelectedId(project.id);
+    setName('');
+    void pickAndCropPatternImage();
+  };
+
+  const handleGeneratedSave = (result: GeneratorSaveResult) => {
+    const projectName = makeUniqueName(name.trim() || makeDatedName('生成图纸'), data.projects.map((project) => project.name));
+    const project: PatternProject = {
+      ...createProject(projectName),
+      source: 'generated',
+      grid: encodeGrid(result.grid),
+      imageUri: result.previewDataUrl,
+      ocrMessage: result.message,
+      items: result.items.map((item) => ({
+        id: makeId('item'),
+        code: item.code,
+        quantity: item.quantity,
+        note: '照片生成',
+      })),
+    };
+    updateData((current) => upsertProject(current, project), `生成图纸：${project.name}`);
+    setSelectedId(project.id);
+    setGeneratorImageUri(undefined);
+    setName('');
+    setNotice(result.message);
+  };
+
+  const handleGeneratedGridEdited = (nextGrid: BeadGrid) => {
+    if (!selectedProject) return;
+    const items = gridToItems(nextGrid).map((item) => {
+      const existing = selectedProject.items.find((current) => normalizeBeadCode(current.code) === normalizeBeadCode(item.code));
+      return existing ? { ...existing, quantity: item.quantity } : { id: makeId('item'), code: item.code, quantity: item.quantity, note: '照片生成' };
+    });
+    saveProject({ ...selectedProject, grid: encodeGrid(nextGrid), items }, `${selectedProject.name} 更新生成图纸`);
+    setNotice('已更新图纸格子，用量草稿已同步');
+  };
+
   const addItem = () => {
     if (!selectedProject) return;
     const code = normalizeBeadCode(itemCode);
@@ -1936,7 +2010,6 @@ function ProjectsScreen({
   };
 
   const pickAndCropPatternImage = async () => {
-    if (!selectedProject) return;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       setNotice('需要相册权限才能上传图纸图片');
@@ -2134,7 +2207,7 @@ function ProjectsScreen({
         <Text style={styles.panelTitle}>新建图纸</Text>
         <View style={styles.inlineForm}>
           <TextInput style={[styles.input, styles.flex]} value={name} onChangeText={setName} placeholder="例如：小熊挂件" />
-          <ActionButton label="新建" onPress={addProject} />
+          <ActionButton label="新建" onPress={() => setNewProjectModeVisible(true)} />
         </View>
       </View>
 
@@ -2171,9 +2244,16 @@ function ProjectsScreen({
                   />
                 </View>
               ) : (
-                <Pressable accessibilityLabel="重命名当前图纸" onPress={() => startProjectNameEdit()}>
-                  <Text style={styles.panelTitle}>{selectedProject.name}</Text>
-                </Pressable>
+                <View style={styles.projectTitleRow}>
+                  <Pressable accessibilityLabel="重命名当前图纸" onPress={() => startProjectNameEdit()}>
+                    <Text style={styles.panelTitle}>{selectedProject.name}</Text>
+                  </Pressable>
+                  {selectedProject.source === 'generated' ? (
+                    <View style={styles.sourceBadge}>
+                      <Text style={styles.sourceBadgeText}>生成</Text>
+                    </View>
+                  ) : null}
+                </View>
               )}
               <Text style={styles.muted}>
                 {selectedProject.items.length} 个颜色 · {projectDeductCount ? `已扣 ${projectDeductCount} 次` : '规划中，未扣库存'}
@@ -2185,7 +2265,11 @@ function ProjectsScreen({
           </View>
 
           {selectedProject.imageUri ? <Image source={{ uri: selectedProject.imageUri }} style={styles.patternImage} /> : null}
-          {selectedProject.imageUri ? <Text style={styles.muted}>上方预览为 OCR 实际识别图；裁剪后会自动加白底留边，避免超宽图片被接口压缩。</Text> : null}
+          {selectedProject.imageUri ? (
+            <Text style={styles.muted}>
+              {selectedProject.source === 'generated' ? '上方为生成图纸渲染图' : '上方预览为 OCR 实际识别图；裁剪后会自动加白底留边，避免超宽图片被接口压缩。'}
+            </Text>
+          ) : null}
           <Text style={styles.muted}>{selectedProject.ocrMessage ?? '上传图片后会先裁剪，再把识别结果写入用量草稿。'}</Text>
           {ocrProgress ? (
             <View style={styles.ocrProgressPanel}>
@@ -2196,6 +2280,7 @@ function ProjectsScreen({
             </View>
           ) : null}
           <View style={styles.buttonRow}>
+            {selectedProject.grid ? <ActionButton label="查看图纸" onPress={() => setGridViewVisible(true)} tone="neutral" /> : null}
             <ActionButton label="上传并裁剪图纸" onPress={pickAndCropPatternImage} tone="neutral" />
             {selectedProject.originalImageUri ? <ActionButton label="重新裁剪原图" onPress={reopenCropFromOriginal} tone="neutral" /> : null}
             {selectedProject.imageUri ? <ActionButton label="查看识别图" onPress={openRecognitionImage} tone="neutral" /> : null}
@@ -2308,6 +2393,49 @@ function ProjectsScreen({
         onConfirm={confirmCropAndRecognize}
       />
       <RecognitionImagePreview uri={recognitionPreviewUri} onClose={() => setRecognitionPreviewUri(undefined)} />
+      <GeneratorModal
+        visible={Boolean(generatorImageUri)}
+        imageUri={generatorImageUri}
+        data={data}
+        onCancel={() => setGeneratorImageUri(undefined)}
+        onSave={handleGeneratedSave}
+      />
+      <GridViewModal
+        visible={gridViewVisible}
+        project={selectedProject}
+        data={data}
+        onClose={() => setGridViewVisible(false)}
+        onGridChanged={handleGeneratedGridEdited}
+      />
+      <Modal visible={newProjectModeVisible} transparent animationType="fade" onRequestClose={() => setNewProjectModeVisible(false)}>
+        <View style={styles.promptBackdrop}>
+          <View style={styles.promptPanel}>
+            <Text style={styles.panelTitle}>新建图纸</Text>
+            <Text style={styles.muted}>选择创建方式{name.trim() ? `，名称：${name.trim()}` : ''}</Text>
+            <Pressable style={styles.optionRow} onPress={() => chooseNewProjectMode('generated')}>
+              <View style={styles.flex}>
+                <Text style={styles.optionTitle}>照片生成图纸</Text>
+                <Text style={styles.optionNote}>上传一张照片，按 MARD 色号自动生成拼豆格子图纸和用量。</Text>
+              </View>
+            </Pressable>
+            <Pressable style={styles.optionRow} onPress={() => chooseNewProjectMode('ocr')}>
+              <View style={styles.flex}>
+                <Text style={styles.optionTitle}>识别图纸清单（OCR）</Text>
+                <Text style={styles.optionNote}>上传现成的色号×数量清单截图，裁剪后 OCR 识别进用量草稿。</Text>
+              </View>
+            </Pressable>
+            <Pressable style={styles.optionRow} onPress={() => chooseNewProjectMode('blank')}>
+              <View style={styles.flex}>
+                <Text style={styles.optionTitle}>空白图纸</Text>
+                <Text style={styles.optionNote}>从零开始手动录入色号和用量。</Text>
+              </View>
+            </Pressable>
+            <View style={styles.promptActions}>
+              <ActionButton label="取消" onPress={() => setNewProjectModeVisible(false)} tone="neutral" />
+            </View>
+          </View>
+        </View>
+      </Modal>
       <ConfirmPrompt
         visible={deleteConfirmVisible}
         title="删除图纸"
@@ -4980,6 +5108,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginTop: 10,
+  },
+  projectTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  sourceBadge: {
+    backgroundColor: colors.blueSoft,
+    borderColor: '#B8CCF0',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  sourceBadgeText: {
+    color: colors.blue,
+    fontSize: 11,
+    fontWeight: '900',
   },
   projectChip: {
     paddingHorizontal: 12,

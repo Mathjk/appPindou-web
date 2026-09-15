@@ -49,6 +49,8 @@ export type PatternProject = {
   imageUri?: string;
   originalImageUri?: string;
   croppedImageUri?: string;
+  source?: PatternProjectSource;
+  grid?: PatternGrid;
   ocrStatus: 'not-started' | 'pending' | 'ready' | 'failed';
   ocrMessage?: string;
   ocrRawText?: string;
@@ -140,4 +142,12 @@ export type OcrDraftResult = {
   engine?: string;
   rawText?: string;
   items: Array<{ code: string; quantity: number; confidence?: number }>;
+};
+
+export type PatternProjectSource = "ocr" | "generated";
+
+export type PatternGrid = {
+  width: number;
+  height: number;
+  cells: string;
 };
