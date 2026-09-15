@@ -16,9 +16,11 @@ export type GridRenderOptions = {
   showCodeLabels?: boolean;
 };
 
-const EMPTY_FILL = '#ECEFF4';
+const BOARD_FILL = '#F4F5F7';
+const EMPTY_FILL = '#E9ECF1';
 const EMPTY_CROSS = '#C4CCD8';
 const GRID_LINE = 'rgba(23, 26, 33, 0.14)';
+const BEAD_RIM = 'rgba(23, 26, 33, 0.16)';
 const MISSING_STROKE = 'rgba(192, 47, 47, 0.9)';
 const LOW_STOCK_FILL = '#F5C518';
 const LOW_STOCK_EDGE = 'rgba(120, 84, 0, 0.65)';
@@ -97,6 +99,8 @@ function drawEmptyCell(context: CanvasRenderingContext2D, x: number, y: number, 
 /**
  * Render a bead grid to a new canvas element. Pure DOM/canvas — no React — so it can be
  * used for on-screen previews and for producing PNG data URLs for storage.
+ * Beads draw as slightly inset rounded squares on a neutral board, so white and
+ * near-white beads stay visibly distinct from empty cells and the page.
  */
 export function renderGridToCanvas(grid: BeadGrid, opts: GridRenderOptions = {}): HTMLCanvasElement {
   const cellPx = Math.max(2, Math.floor(opts.cellPx ?? 16));
@@ -111,8 +115,12 @@ export function renderGridToCanvas(grid: BeadGrid, opts: GridRenderOptions = {})
   const context = canvas.getContext('2d');
   if (!context) throw new Error('浏览器不支持 Canvas 渲染');
 
-  context.fillStyle = '#FFFFFF';
+  context.fillStyle = BOARD_FILL;
   context.fillRect(0, 0, widthPx, heightPx);
+
+  const inset = cellPx >= 8 ? Math.max(1, cellPx * 0.06) : 0;
+  const beadSize = cellPx - inset * 2;
+  const radius = Math.min(beadSize / 2, Math.max(0, cellPx * 0.3));
 
   for (let row = 0; row < grid.height; row += 1) {
     for (let col = 0; col < grid.width; col += 1) {
@@ -125,7 +133,16 @@ export function renderGridToCanvas(grid: BeadGrid, opts: GridRenderOptions = {})
       }
       const hex = MARD_291_COLORS[value]?.hex ?? '#FF00FF';
       context.fillStyle = hex;
-      context.fillRect(x, y, cellPx, cellPx);
+      if (inset > 0) {
+        context.beginPath();
+        context.roundRect(x + inset, y + inset, beadSize, beadSize, radius);
+        context.fill();
+        context.strokeStyle = BEAD_RIM;
+        context.lineWidth = 1;
+        context.stroke();
+      } else {
+        context.fillRect(x, y, cellPx, cellPx);
+      }
       if (opts.missingIndices?.has(value)) drawMissingHatch(context, x, y, cellPx);
       else if (opts.lowStockIndices?.has(value)) drawLowStockMarker(context, x, y, cellPx);
       if (showCodeLabels) {

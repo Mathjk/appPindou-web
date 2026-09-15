@@ -294,6 +294,31 @@ check('dithered gradient still produces a valid grid', () => {
   assert([...again.grid.cells].join(',') === [...res.grid.cells].join(','), 'dither should be deterministic');
 });
 
+check('dominant sampling snaps a mixed cell to its majority color', () => {
+  const [rr, rg, rb] = hexRgb(RED.hex);
+  const [br, bg, bb] = hexRgb(BLUE.hex);
+  // 16x4 image, red left of x=7 / blue right. gridWidth 4 -> each cell covers a
+  // 4x4 block, so cell x=1 sees 3/4 red + 1/4 blue (a hard edge inside the cell).
+  const img = makeImage(16, 4, (x) => (x < 7 ? [rr, rg, rb, 255] : [br, bg, bb, 255]));
+  const res = generateBeadGrid(img, { gridWidth: 4, maxColors: 8, removeEdgeBackground: false });
+  assert(res.grid.cells[1] === indexOf(RED.code), 'mixed cell should snap to majority red, not average to mud');
+  assert(res.grid.cells[2] === indexOf(BLUE.code), 'solid cell should stay blue');
+  assert(res.usedColorCount === 2, 'dominant sampling should not invent a third edge color');
+});
+
+check('majority smoothing repaints a speckle with 3+ same-color neighbors', () => {
+  const [rr, rg, rb] = hexRgb(RED.hex);
+  const [br, bg, bb] = hexRgb(BLUE.hex);
+  // Vertical red pair at (3,3)-(4,3) in a blue field: each cell has exactly 3 blue
+  // neighbors, so isolated-cleanup alone keeps them but majority smoothing erases both.
+  const img = makeImage(8, 8, (x, y) => (y === 3 && (x === 3 || x === 4) ? [rr, rg, rb, 255] : [br, bg, bb, 255]));
+  const res = generateBeadGrid(img, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false });
+  assert(res.grid.cells[3 * 8 + 3] === indexOf(BLUE.code), 'speckle cell with 3 blue neighbors should adopt blue');
+  assert(res.usedColorCount === 1, 'smoothing should erase the whole speckle pair');
+  const raw = generateBeadGrid(img, { gridWidth: 8, maxColors: 8, removeEdgeBackground: false, smooth: false });
+  assert(raw.grid.cells[3 * 8 + 3] === indexOf(RED.code), 'smooth:false should keep the pair');
+});
+
 console.log(`pattern smoke tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

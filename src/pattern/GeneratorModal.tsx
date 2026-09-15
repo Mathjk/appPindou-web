@@ -123,6 +123,8 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [paletteScope, setPaletteScope] = useState<PaletteScope>('all');
   const [dither, setDither] = useState(false);
   const [removeBg, setRemoveBg] = useState(true);
+  const [sampling, setSampling] = useState<'dominant' | 'average'>('dominant');
+  const [smooth, setSmooth] = useState(true);
   const [eraseMode, setEraseMode] = useState(false);
   const [showOverlay, setShowOverlay] = useState(true);
   const [showCodes, setShowCodes] = useState(false);
@@ -198,6 +200,8 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
           gridWidth,
           maxColors,
           dither,
+          sampling,
+          smooth,
           removeEdgeBackground: removeBg,
           paletteScope,
           inventoryCodes: paletteScope === 'inventory' ? inventoryCodes : undefined,
@@ -225,7 +229,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     return () => {
       cancelled = true;
     };
-  }, [pixels, gridWidth, maxColors, dither, removeBg, paletteScope, inventoryCodes]);
+  }, [pixels, gridWidth, maxColors, dither, sampling, smooth, removeBg, paletteScope, inventoryCodes]);
 
   const items = useMemo(() => {
     if (!grid) return [] as Array<{ code: string; quantity: number }>;
@@ -487,8 +491,15 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                   <Chip label="仅库存色号" active={paletteScope === 'inventory'} onPress={() => setPaletteScope('inventory')} />
                 </View>
 
+                <Text style={ui.label}>采样方式</Text>
+                <View style={ui.chipRow}>
+                  <Chip label="保边（线条/卡通）" active={sampling === 'dominant'} onPress={() => setSampling('dominant')} />
+                  <Chip label="平滑（照片渐变）" active={sampling === 'average'} onPress={() => setSampling('average')} />
+                </View>
+
                 <Text style={ui.label}>效果开关</Text>
                 <View style={ui.chipRow}>
+                  <Chip label={`杂点清理 ${smooth ? '开' : '关'}`} active={smooth} onPress={() => setSmooth((v) => !v)} />
                   <Chip label={`抖动 ${dither ? '开' : '关'}`} active={dither} onPress={() => setDither((v) => !v)} />
                   <Chip label={`自动去背景 ${removeBg ? '开' : '关'}`} active={removeBg} onPress={() => setRemoveBg((v) => !v)} />
                 </View>

@@ -31,6 +31,15 @@ export type GenerateOptions = {
   maxColors: number;
   /** Floyd-Steinberg error diffusion during matching. Default false. */
   dither?: boolean;
+  /**
+   * Region sampling mode per cell. 'dominant' takes the mean of the largest
+   * coarse color cluster inside the cell area — crisper edges on line art and
+   * logos (black+white border cells come out black or white, not grey).
+   * 'average' blends the whole area. Default 'dominant'.
+   */
+  sampling?: 'dominant' | 'average';
+  /** Majority smoothing: a cell whose 4-neighbors share >=3 of one other color adopts it. Default true. */
+  smooth?: boolean;
   /** Flood-remove cells connected to the edges that match the corner background color. Default true. */
   removeEdgeBackground?: boolean;
   /** Which MARD subset may be used for matching. Default 'all'. */
@@ -78,8 +87,16 @@ const LAB_DELTA_CUBE = LAB_DELTA * LAB_DELTA * LAB_DELTA;
 const LAB_LINEAR_DENOM = 3 * LAB_DELTA * LAB_DELTA;
 
 /** Edge cells within this CIE Lab distance of the corner background color are removed. */
-const EDGE_BG_LAB_THRESHOLD = 14;
+const EDGE_BG_LAB_THRESHOLD = 20;
 const EDGE_BG_LAB_THRESHOLD_SQ = EDGE_BG_LAB_THRESHOLD * EDGE_BG_LAB_THRESHOLD;
+/** A cell may also join the background flood when it is within this Lab distance of an
+ * already-removed neighbor — provided it still stays within EDGE_BG_LAB_HARD of the
+ * background color. Lets the flood follow textured/gradient backgrounds without
+ * unbounded drift into the subject. */
+const EDGE_BG_NEIGHBOR_LAB = 6;
+const EDGE_BG_NEIGHBOR_LAB_SQ = EDGE_BG_NEIGHBOR_LAB * EDGE_BG_NEIGHBOR_LAB;
+const EDGE_BG_LAB_HARD = 30;
+const EDGE_BG_LAB_HARD_SQ = EDGE_BG_LAB_HARD * EDGE_BG_LAB_HARD;
 
 /** Mean alpha byte below which a sampled cell counts as transparent. */
 const ALPHA_THRESHOLD = 128;
@@ -171,16 +188,20 @@ export function usablePaletteIndices(scope: PaletteScope = 'all', inventoryCodes
  * Convert an image to a bead grid.
  *
  * Pipeline (deterministic — same input and options give the same grid):
- * 1. Area-average sampling: each cell takes the mean RGB of its source rectangle
- *    (never single-pixel sampling). Alpha < 0.5 cells become EMPTY_CELL.
- * 2. Edge background removal (optional): median corner color, flood-fill from all
- *    edge cells whose Lab distance to it stays under ~14.
+ * 1. Region sampling: each cell takes the dominant cluster color (default) or the
+ *    mean RGB of its source rectangle (never single-pixel sampling).
+ *    Alpha < 0.5 cells become EMPTY_CELL.
+ * 2. Edge background removal (optional): background color = median of all edge
+ *    cells; flood-fill from edges where a cell joins if it is close to the
+ *    background (Lab < ~18) or close to an already-removed neighbor (Lab < ~8),
+ *    so textured/gradient backgrounds still get picked up.
  * 3. Nearest-color matching in CIE Lab space against the scoped palette.
  *    With dither enabled, quantization error diffuses right/down (Floyd-Steinberg).
  * 4. maxColors enforcement: repeatedly merge the pair minimizing
  *    labDistance * (1 + minUsage/totalCells); cells go to the higher-usage color.
  * 5. Isolated-cell cleanup: a cell differing from all present 4-neighbors takes
- *    the most frequent neighbor color.
+ *    the most frequent neighbor color; then an optional majority pass lets a cell
+ *    adopt a single color shared by >=3 of its 4-neighbors.
  */
 export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): GenerateResult {
   const { width: imgW, height: imgH, data } = image;
@@ -202,13 +223,23 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
   }
   const maxColors = Math.max(1, Math.floor(options.maxColors));
 
-  // Step 1: area-average sampling into a float RGB grid. Cells whose mean alpha
+  // Step 1: region sampling into a float RGB grid. Cells whose mean alpha
   // stays below 0.5 are EMPTY_CELL and never reach matching or counting.
+  // 'average' blends the whole rectangle; 'dominant' bins pixels into 512 coarse
+  // buckets (top 3 bits per channel) and takes the mean of the largest bucket, so
+  // a cell straddling a black outline and a white fill snaps to one side instead
+  // of averaging into mud grey.
+  const sampling = options.sampling ?? 'dominant';
   const cells = new Int32Array(cellCount).fill(EMPTY_CELL);
   const hasColor = new Uint8Array(cellCount); // 1 = sampled opaque cell
   const workR = new Float64Array(cellCount);
   const workG = new Float64Array(cellCount);
   const workB = new Float64Array(cellCount);
+  const binCount = new Uint32Array(512);
+  const binSumR = new Float64Array(512);
+  const binSumG = new Float64Array(512);
+  const binSumB = new Float64Array(512);
+  const touched: number[] = [];
   for (let cy = 0; cy < gridH; cy++) {
     const sy0 = Math.floor((cy * imgH) / gridH);
     const sy1 = Math.min(imgH, Math.max(sy0 + 1, Math.ceil(((cy + 1) * imgH) / gridH)));
@@ -220,23 +251,49 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
       let b = 0;
       let a = 0;
       let n = 0;
+      touched.length = 0;
       for (let sy = sy0; sy < sy1; sy++) {
         let offset = (sy * imgW + sx0) * 4;
         for (let sx = sx0; sx < sx1; sx++) {
-          r += data[offset] ?? 0;
-          g += data[offset + 1] ?? 0;
-          b += data[offset + 2] ?? 0;
+          const pr = data[offset] ?? 0;
+          const pg = data[offset + 1] ?? 0;
+          const pb = data[offset + 2] ?? 0;
+          r += pr;
+          g += pg;
+          b += pb;
           a += data[offset + 3] ?? 0;
           n++;
+          const bin = ((pr >> 5) << 6) | ((pg >> 5) << 3) | (pb >> 5);
+          if (binCount[bin] === 0) touched.push(bin);
+          binCount[bin]!++;
+          binSumR[bin] = binSumR[bin]! + pr;
+          binSumG[bin] = binSumG[bin]! + pg;
+          binSumB[bin] = binSumB[bin]! + pb;
           offset += 4;
         }
       }
       const i = cy * gridW + cx;
       if (a / n >= ALPHA_THRESHOLD) {
         hasColor[i] = 1;
-        workR[i] = r / n;
-        workG[i] = g / n;
-        workB[i] = b / n;
+        if (sampling === 'dominant' && touched.length > 1) {
+          let bestBin = touched[0]!;
+          for (const bin of touched) {
+            if (binCount[bin]! > binCount[bestBin]!) bestBin = bin;
+          }
+          workR[i] = binSumR[bestBin]! / binCount[bestBin]!;
+          workG[i] = binSumG[bestBin]! / binCount[bestBin]!;
+          workB[i] = binSumB[bestBin]! / binCount[bestBin]!;
+        } else {
+          workR[i] = r / n;
+          workG[i] = g / n;
+          workB[i] = b / n;
+        }
+      }
+      for (const bin of touched) {
+        binCount[bin] = 0;
+        binSumR[bin] = 0;
+        binSumG[bin] = 0;
+        binSumB[bin] = 0;
       }
     }
   }
@@ -251,45 +308,62 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
     cellLab[i * 3 + 2] = b;
   }
 
-  // Step 2: edge background removal — median corner color, flood from every edge
-  // cell that stays within the Lab threshold of it.
+  // Step 2: edge background removal — background color is the median of ALL
+  // edge cells (robust when a subject touches a corner), then a flood from the
+  // edges. A cell joins when it is close to the background color outright, or
+  // close to an already-removed neighbor while still within a hard bound of the
+  // background — the second rule follows JPEG noise and gradual gradients that
+  // a flat threshold leaves behind as grey beads.
   let removedCells = 0;
   if (options.removeEdgeBackground !== false) {
-    const cornerIndices = [0, gridW - 1, (gridH - 1) * gridW, cellCount - 1];
-    const cornerCells = cornerIndices.filter((i) => hasColor[i] === 1);
-    if (cornerCells.length > 0) {
-      const bgR = median(cornerCells.map((i) => workR[i]!));
-      const bgG = median(cornerCells.map((i) => workG[i]!));
-      const bgB = median(cornerCells.map((i) => workB[i]!));
+    const edgeCells: number[] = [];
+    for (let cx = 0; cx < gridW; cx++) {
+      edgeCells.push(cx);
+      edgeCells.push((gridH - 1) * gridW + cx);
+    }
+    for (let cy = 0; cy < gridH; cy++) {
+      edgeCells.push(cy * gridW);
+      edgeCells.push(cy * gridW + gridW - 1);
+    }
+    const opaqueEdge = edgeCells.filter((i) => hasColor[i] === 1);
+    if (opaqueEdge.length > 0) {
+      const bgR = median(opaqueEdge.map((i) => workR[i]!));
+      const bgG = median(opaqueEdge.map((i) => workG[i]!));
+      const bgB = median(opaqueEdge.map((i) => workB[i]!));
       const [bgL, bgA, bgB2] = rgbToLab(bgR, bgG, bgB);
       const queued = new Uint8Array(cellCount);
       const queue: number[] = [];
-      const tryVisit = (i: number) => {
+      const tryVisit = (i: number, fromI: number) => {
         if (hasColor[i] !== 1 || queued[i] === 1) return;
-        const d2 = labDistanceSq(cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!, bgL, bgA, bgB2);
-        if (d2 < EDGE_BG_LAB_THRESHOLD_SQ) {
+        const dBg = labDistanceSq(cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!, bgL, bgA, bgB2);
+        let join = dBg < EDGE_BG_LAB_THRESHOLD_SQ;
+        if (!join && fromI >= 0 && dBg < EDGE_BG_LAB_HARD_SQ) {
+          const dNeighbor = labDistanceSq(
+            cellLab[i * 3]!,
+            cellLab[i * 3 + 1]!,
+            cellLab[i * 3 + 2]!,
+            cellLab[fromI * 3]!,
+            cellLab[fromI * 3 + 1]!,
+            cellLab[fromI * 3 + 2]!,
+          );
+          join = dNeighbor < EDGE_BG_NEIGHBOR_LAB_SQ;
+        }
+        if (join) {
           queued[i] = 1;
           queue.push(i);
         }
       };
-      for (let cx = 0; cx < gridW; cx++) {
-        tryVisit(cx);
-        tryVisit((gridH - 1) * gridW + cx);
-      }
-      for (let cy = 0; cy < gridH; cy++) {
-        tryVisit(cy * gridW);
-        tryVisit(cy * gridW + gridW - 1);
-      }
+      for (const i of edgeCells) tryVisit(i, -1);
       while (queue.length > 0) {
         const i = queue.pop()!;
         hasColor[i] = 0;
         removedCells++;
         const cx = i % gridW;
         const cy = (i / gridW) | 0;
-        if (cx > 0) tryVisit(i - 1);
-        if (cx < gridW - 1) tryVisit(i + 1);
-        if (cy > 0) tryVisit(i - gridW);
-        if (cy < gridH - 1) tryVisit(i + gridW);
+        if (cx > 0) tryVisit(i - 1, i);
+        if (cx < gridW - 1) tryVisit(i + 1, i);
+        if (cy > 0) tryVisit(i - gridW, i);
+        if (cy < gridH - 1) tryVisit(i + gridW, i);
       }
     }
   }
@@ -415,6 +489,34 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
       }
       cleaned[i] = bestIdx;
     }
+  }
+
+  // Step 5b: majority smoothing — when >=3 of a cell's 4-neighbors share one
+  // single value different from the cell (including EMPTY), the cell adopts it.
+  // Kills the residual speckle that isolated-cell cleanup cannot reach (a noise
+  // cell that happens to touch one same-colored neighbor survives step 5).
+  // Snapshot semantics; single pass keeps thin 1-cell lines intact.
+  if (options.smooth !== false) {
+    const smoothed = Int32Array.from(cleaned);
+    for (let cy = 0; cy < gridH; cy++) {
+      for (let cx = 0; cx < gridW; cx++) {
+        const i = cy * gridW + cx;
+        const own = cleaned[i]!;
+        const counts = new Map<number, number>();
+        const tally = (v: number) => counts.set(v, (counts.get(v) ?? 0) + 1);
+        if (cx > 0) tally(cleaned[i - 1]!);
+        if (cx < gridW - 1) tally(cleaned[i + 1]!);
+        if (cy > 0) tally(cleaned[i - gridW]!);
+        if (cy < gridH - 1) tally(cleaned[i + gridW]!);
+        for (const [v, count] of counts) {
+          if (v !== own && count >= 3) {
+            smoothed[i] = v;
+            break;
+          }
+        }
+      }
+    }
+    cleaned.set(smoothed);
   }
 
   const grid: BeadGrid = { width: gridW, height: gridH, cells: cleaned };
