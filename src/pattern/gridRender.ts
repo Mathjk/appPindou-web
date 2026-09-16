@@ -97,6 +97,27 @@ function drawEmptyCell(context: CanvasRenderingContext2D, x: number, y: number, 
 }
 
 /**
+ * Render a bead grid at export resolution (grid lines + color codes when the
+ * cells are large enough) and trigger a browser PNG download.
+ */
+export function exportGridPng(grid: BeadGrid, filename: string): void {
+  const longest = Math.max(grid.width, grid.height);
+  const cellPx = Math.min(28, Math.max(12, Math.floor(2400 / longest)));
+  const canvas = renderGridToCanvas(grid, { cellPx, showGridLines: true, showCodeLabels: cellPx >= 20 });
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }, 'image/png');
+}
+
+/**
  * Render a bead grid to a new canvas element. Pure DOM/canvas — no React — so it can be
  * used for on-screen previews and for producing PNG data URLs for storage.
  * Beads draw as slightly inset rounded squares on a neutral board, so white and

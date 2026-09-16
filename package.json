@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@mediapipe/selfie_segmentation": "^0.1.1675465747",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@supabase/supabase-js": "^2.107.0",
     "expo": "~56.0.9",

@@ -342,6 +342,33 @@ check('smoothing merges near-color pairs and fills one-cell holes', () => {
   assert(unfilled.grid.cells[4 * 8 + 4] === EMPTY_CELL, 'smooth:false should keep the hole');
 });
 
+
+check('segmentation mask blanks non-person cells and skips edge flood', () => {
+  // Left half is the subject (mask=255), right half is background (mask=0).
+  // Mask is authoritative: even though the right half touches the edge with a
+  // uniform color, removal is credited to the mask, and the subject survives
+  // regardless of edge-seed rules.
+  const [br, bg, bb] = hexRgb(BLUE.hex);
+  const [rr, rg, rb] = hexRgb(RED.hex);
+  const img = makeImage(8, 4, (x) => (x < 4 ? [br, bg, bb, 255] : [rr, rg, rb, 255]));
+  const mask = new Uint8ClampedArray(8 * 4);
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 8; x++) mask[y * 8 + x] = x < 4 ? 255 : 0;
+  const res = generateBeadGrid(img, {
+    gridWidth: 8,
+    maxColors: 6,
+    segmentationMask: { width: 8, height: 4, data: mask },
+  });
+  const blueIdx = indexOf(BLUE.code);
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 8; x++) {
+      const cell = res.grid.cells[y * 8 + x];
+      if (x < 4) assert(cell === blueIdx, `subject cell (${x},${y}) should be BLUE`);
+      else assert(cell === EMPTY_CELL, `masked cell (${x},${y}) should be EMPTY`);
+    }
+  }
+  assert(res.removedCells === 16, 'mask removal should count as removed cells');
+});
+
 console.log(`pattern smoke tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);

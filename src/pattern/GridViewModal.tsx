@@ -6,7 +6,7 @@ import { MARD_291_COLORS } from '../data/mard291';
 import type { AppData, PatternProject } from '../types';
 import { EMPTY_CELL, decodeGrid, gridToItems, removeColorCells } from './engine';
 import type { BeadGrid } from './engine';
-import { buildStockOverlay, renderGridToCanvas } from './gridRender';
+import { buildStockOverlay, exportGridPng, renderGridToCanvas } from './gridRender';
 
 export type GridViewModalProps = {
   visible: boolean;
@@ -85,6 +85,20 @@ export function GridViewModal({ visible, project, data, onClose, onGridChanged }
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
   const [localMsg, setLocalMsg] = useState('');
+
+  const handleExportPng = () => {
+    if (!grid) {
+      setLocalMsg('图纸还没有解析完成，无法导出');
+      return;
+    }
+    try {
+      exportGridPng(grid, `${project?.name ?? '拼豆图纸'}-${grid.width}x${grid.height}.png`);
+      setLocalMsg('已导出 PNG 图片');
+    } catch (error) {
+      setLocalMsg(`导出失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const stored = project?.grid;
@@ -228,6 +242,7 @@ export function GridViewModal({ visible, project, data, onClose, onGridChanged }
                     {onGridChanged ? (
                       <Chip label="点色删除" active={eraseMode} danger onPress={() => setEraseMode((v) => !v)} />
                     ) : null}
+                    <Chip label="导出图片" onPress={handleExportPng} />
                   </View>
                 </View>
                 {eraseMode ? (

@@ -46,6 +46,14 @@ export type GenerateOptions = {
   paletteScope?: PaletteScope;
   /** Codes with stock > 0. Required when paletteScope === 'inventory'. */
   inventoryCodes?: ReadonlySet<string>;
+  /**
+   * Optional foreground mask at image resolution (0-255 per pixel, row-major,
+   * same dimensions as ImagePixels). When present, cells whose mean mask
+   * coverage stays below the foreground threshold become EMPTY_CELL and the
+   * edge-color flood is skipped entirely - the mask is the authoritative
+   * subject/background split (e.g. ML person segmentation).
+   */
+  segmentationMask?: { width: number; height: number; data: Uint8ClampedArray };
 };
 
 export type GenerateResult = {
@@ -53,7 +61,7 @@ export type GenerateResult = {
   /** BOM sorted by palette sortOrder: one entry per used code. */
   items: Array<{ code: string; quantity: number }>;
   usedColorCount: number;
-  /** Cells blanked by edge-background removal (0 when disabled). */
+  /** Cells blanked by background removal or the segmentation mask (0 when neither ran). */
   removedCells: number;
   /** How many palette colors were eligible under the scope (for low-inventory warnings). */
   paletteSize: number;
@@ -110,6 +118,7 @@ const CENTER_DEDUP_LAB_SQ = CENTER_DEDUP_LAB * CENTER_DEDUP_LAB;
 
 /** Mean alpha byte below which a sampled cell counts as transparent. */
 const ALPHA_THRESHOLD = 128;
+const SEG_MASK_FG_MIN = 0.3;
 
 function srgbToLinearChannel(value: number): number {
   const v = value / 255;
@@ -331,6 +340,10 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
   // a cell straddling a black outline and a white fill snaps to one side instead
   // of averaging into mud grey.
   const sampling = options.sampling ?? 'dominant';
+  const mask = options.segmentationMask;
+  const maskData =
+    mask && mask.width === imgW && mask.height === imgH && mask.data.length >= imgW * imgH ? mask.data : undefined;
+  let maskedOut = 0;
   const cells = new Int32Array(cellCount).fill(EMPTY_CELL);
   const hasColor = new Uint8Array(cellCount); // 1 = sampled opaque cell
   const workR = new Float64Array(cellCount);
@@ -352,6 +365,7 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
       let b = 0;
       let a = 0;
       let n = 0;
+      let m = 0;
       touched.length = 0;
       for (let sy = sy0; sy < sy1; sy++) {
         let offset = (sy * imgW + sx0) * 4;
@@ -364,6 +378,7 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
           b += pb;
           a += data[offset + 3] ?? 0;
           n++;
+          m += maskData ? maskData[offset >> 2] ?? 0 : 255;
           const bin = ((pr >> 5) << 6) | ((pg >> 5) << 3) | (pb >> 5);
           if (binCount[bin] === 0) touched.push(bin);
           binCount[bin]!++;
@@ -374,7 +389,8 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
         }
       }
       const i = cy * gridW + cx;
-      if (a / n >= ALPHA_THRESHOLD) {
+      const opaque = a / n >= ALPHA_THRESHOLD;
+      if (opaque && (!maskData || m / n / 255 >= SEG_MASK_FG_MIN)) {
         hasColor[i] = 1;
         if (sampling === 'dominant' && touched.length > 1) {
           let bestBin = touched[0]!;
@@ -389,6 +405,9 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
           workG[i] = g / n;
           workB[i] = b / n;
         }
+      }
+      else if (opaque && maskData) {
+        maskedOut++;
       }
       for (const bin of touched) {
         binCount[bin] = 0;
@@ -414,8 +433,8 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
   // sitting within the Lab threshold of a seed directly. The flood therefore
   // covers gradients and multi-tone backdrops but can never chain its way into
   // the subject through a soft transition.
-  let removedCells = 0;
-  if (options.removeEdgeBackground !== false) {
+  let removedCells = maskedOut;
+  if (maskData || options.removeEdgeBackground !== false) {
     const edgeCells: number[] = [];
     for (let cx = 0; cx < gridW; cx++) {
       edgeCells.push(cx);
@@ -426,81 +445,83 @@ export function generateBeadGrid(image: ImagePixels, options: GenerateOptions): 
       edgeCells.push(cy * gridW + gridW - 1);
     }
     const opaqueEdge = edgeCells.filter((i) => hasColor[i] === 1);
-    if (opaqueEdge.length > 0) {
-      const seedK = Math.min(EDGE_BG_MAX_CLUSTERS, opaqueEdge.length);
-      const allSeeds = clusterCellColors(opaqueEdge, cellLab, seedK);
-      // Background seeds are qualified by per-edge support below.
-      // Per-edge support: a seed only counts as background when it covers >=15%
-      // of the opaque cells on at least two distinct borders. A cluster confined
-      // to one border is far more likely an edge-touching subject (a laptop base
-      // on the bottom edge, hair along the top) than a backdrop, so it never
-      // seeds the flood - leftover background can still be tap-erased, but eaten
-      // subject cannot be recovered.
-      const edgeLens = [0, 0, 0, 0]; // opaque cells per border: T B L R
-      const seedEdgeCount = new Uint32Array(seedK * 4);
-      for (const i of opaqueEdge) {
-        const edges: number[] = [];
-        if (i < gridW) edges.push(0);
-        if (i >= (gridH - 1) * gridW) edges.push(1);
-        if (i % gridW === 0) edges.push(2);
-        if (i % gridW === gridW - 1) edges.push(3);
-        for (const e of edges) edgeLens[e]++;
-        let best = 0;
-        let bd = Infinity;
-        for (let s = 0; s < seedK; s++) {
-          const d = labDistanceSq(
-            cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
-            allSeeds[s * 3]!, allSeeds[s * 3 + 1]!, allSeeds[s * 3 + 2]!,
-          );
-          if (d < bd) {
-            bd = d;
-            best = s;
+    if (maskData || opaqueEdge.length > 0) {
+      if (!maskData) {
+        const seedK = Math.min(EDGE_BG_MAX_CLUSTERS, opaqueEdge.length);
+        const allSeeds = clusterCellColors(opaqueEdge, cellLab, seedK);
+        // Background seeds are qualified by per-edge support below.
+        // Per-edge support: a seed only counts as background when it covers >=15%
+        // of the opaque cells on at least two distinct borders. A cluster confined
+        // to one border is far more likely an edge-touching subject (a laptop base
+        // on the bottom edge, hair along the top) than a backdrop, so it never
+        // seeds the flood - leftover background can still be tap-erased, but eaten
+        // subject cannot be recovered.
+        const edgeLens = [0, 0, 0, 0]; // opaque cells per border: T B L R
+        const seedEdgeCount = new Uint32Array(seedK * 4);
+        for (const i of opaqueEdge) {
+          const edges: number[] = [];
+          if (i < gridW) edges.push(0);
+          if (i >= (gridH - 1) * gridW) edges.push(1);
+          if (i % gridW === 0) edges.push(2);
+          if (i % gridW === gridW - 1) edges.push(3);
+          for (const e of edges) edgeLens[e]++;
+          let best = 0;
+          let bd = Infinity;
+          for (let s = 0; s < seedK; s++) {
+            const d = labDistanceSq(
+              cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+              allSeeds[s * 3]!, allSeeds[s * 3 + 1]!, allSeeds[s * 3 + 2]!,
+            );
+            if (d < bd) {
+              bd = d;
+              best = s;
+            }
           }
+          for (const e of edges) seedEdgeCount[best * 4 + e]++;
         }
-        for (const e of edges) seedEdgeCount[best * 4 + e]++;
-      }
-      const qualified = [...Array(seedK).keys()].filter(
-        (s) => [0, 1, 2, 3].filter((e) => seedEdgeCount[s * 4 + e]! >= edgeLens[e]! * 0.15).length >= 2,
-      );
-      const seeds = new Float64Array(qualified.length * 3);
-      qualified.forEach((s, qi) => {
-        seeds[qi * 3] = allSeeds[s * 3]!;
-        seeds[qi * 3 + 1] = allSeeds[s * 3 + 1]!;
-        seeds[qi * 3 + 2] = allSeeds[s * 3 + 2]!;
-      });
-      const seedCount = qualified.length;
-      const queued = new Uint8Array(cellCount);
-      const queue: number[] = [];
-      const nearSeed = (i: number): boolean => {
-        for (let s = 0; s < seedCount; s++) {
-          const d2 = labDistanceSq(
-            cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
-            seeds[s * 3]!, seeds[s * 3 + 1]!, seeds[s * 3 + 2]!,
-          );
-          if (d2 < EDGE_BG_LAB_THRESHOLD_SQ) return true;
+        const qualified = [...Array(seedK).keys()].filter(
+          (s) => [0, 1, 2, 3].filter((e) => seedEdgeCount[s * 4 + e]! >= edgeLens[e]! * 0.15).length >= 2,
+        );
+        const seeds = new Float64Array(qualified.length * 3);
+        qualified.forEach((s, qi) => {
+          seeds[qi * 3] = allSeeds[s * 3]!;
+          seeds[qi * 3 + 1] = allSeeds[s * 3 + 1]!;
+          seeds[qi * 3 + 2] = allSeeds[s * 3 + 2]!;
+        });
+        const seedCount = qualified.length;
+        const queued = new Uint8Array(cellCount);
+        const queue: number[] = [];
+        const nearSeed = (i: number): boolean => {
+          for (let s = 0; s < seedCount; s++) {
+            const d2 = labDistanceSq(
+              cellLab[i * 3]!, cellLab[i * 3 + 1]!, cellLab[i * 3 + 2]!,
+              seeds[s * 3]!, seeds[s * 3 + 1]!, seeds[s * 3 + 2]!,
+            );
+            if (d2 < EDGE_BG_LAB_THRESHOLD_SQ) return true;
+          }
+          return false;
+        };
+        const tryVisit = (i: number) => {
+          if (hasColor[i] !== 1 || queued[i] === 1) return;
+          if (nearSeed(i)) {
+            queued[i] = 1;
+            queue.push(i);
+          }
+        };
+        if (seedCount > 0) {
+        for (const i of edgeCells) tryVisit(i);
+        while (queue.length > 0) {
+          const i = queue.pop()!;
+          hasColor[i] = 0;
+          removedCells++;
+          const cx = i % gridW;
+          const cy = (i / gridW) | 0;
+          if (cx > 0) tryVisit(i - 1);
+          if (cx < gridW - 1) tryVisit(i + 1);
+          if (cy > 0) tryVisit(i - gridW);
+          if (cy < gridH - 1) tryVisit(i + gridW);
         }
-        return false;
-      };
-      const tryVisit = (i: number) => {
-        if (hasColor[i] !== 1 || queued[i] === 1) return;
-        if (nearSeed(i)) {
-          queued[i] = 1;
-          queue.push(i);
         }
-      };
-      if (seedCount > 0) {
-      for (const i of edgeCells) tryVisit(i);
-      while (queue.length > 0) {
-        const i = queue.pop()!;
-        hasColor[i] = 0;
-        removedCells++;
-        const cx = i % gridW;
-        const cy = (i / gridW) | 0;
-        if (cx > 0) tryVisit(i - 1);
-        if (cx < gridW - 1) tryVisit(i + 1);
-        if (cy > 0) tryVisit(i - gridW);
-        if (cy < gridH - 1) tryVisit(i + gridW);
-      }
       }
 
       // Drop debris: (a) tiny disconnected islands of kept cells - leftovers

@@ -24,7 +24,9 @@ import {
   usablePaletteIndices,
 } from './engine';
 import type { BeadGrid, ImagePixels, PaletteScope } from './engine';
-import { buildStockOverlay, renderGridToCanvas } from './gridRender';
+import { buildStockOverlay, exportGridPng, renderGridToCanvas } from './gridRender';
+import { segmentPerson } from './segment';
+import type { ForegroundMask } from './segment';
 
 export type GeneratorSaveResult = {
   grid: BeadGrid;
@@ -127,6 +129,11 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [smooth, setSmooth] = useState(true);
   const [eraseMode, setEraseMode] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
+  const [bgMode, setBgMode] = useState<'edge' | 'person'>('edge');
+  const [segMask, setSegMask] = useState<ForegroundMask | undefined>();
+  const [segBusy, setSegBusy] = useState(false);
+  const [segError, setSegError] = useState('');
+  const sourceCanvasRef = useRef<HTMLCanvasElement | undefined>(undefined);
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
   const [grid, setGrid] = useState<BeadGrid | undefined>();
@@ -151,6 +158,10 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     setGenError('');
     setPixels(undefined);
     setGrid(undefined);
+    setSegMask(undefined);
+    setSegError('');
+    setSegBusy(false);
+    sourceCanvasRef.current = undefined;
     const image = document.createElement('img');
     image.onload = () => {
       if (cancelled) return;
@@ -168,6 +179,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
         if (!context) throw new Error('浏览器不支持 Canvas');
         context.drawImage(image, 0, 0, sourceWidth, sourceHeight, 0, 0, width, height);
         const imageData = context.getImageData(0, 0, width, height);
+        sourceCanvasRef.current = canvas;
         setPixels({ width, height, data: imageData.data });
       } catch (error) {
         setLoadError(`图片读取失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -183,10 +195,39 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     };
   }, [visible, imageUri]);
 
+  // Person segmentation: lazy-loads the MediaPipe WASM model on first use and
+  // caches the mask per loaded image. Failure falls back to edge detection.
+  useEffect(() => {
+    if (bgMode !== 'person' || segMask || segBusy || segError) return;
+    const source = sourceCanvasRef.current;
+    if (!source || !pixels) return;
+    let cancelled = false;
+    setSegBusy(true);
+    segmentPerson(source, pixels.width, pixels.height)
+      .then((mask) => {
+        if (cancelled) return;
+        setSegMask(mask);
+        setSegBusy(false);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSegBusy(false);
+        setSegError(`人像分割失败，已回退边缘检测：${error instanceof Error ? error.message : '未知错误'}`);
+        setBgMode('edge');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bgMode, segMask, segBusy, segError, pixels]);
+
   // Regenerate whenever the source pixels or any parameter change. Wide grids get a small
   // debounce so numeric inputs stay responsive.
   useEffect(() => {
     if (!pixels) return;
+    if (bgMode === 'person' && !segMask) {
+      setGrid(undefined);
+      return;
+    }
     if (paletteScope === 'inventory' && inventoryCodes.size === 0) {
       setGrid(undefined);
       setGenError('库存为空，无法使用「仅库存色号」；请先在豆仓录入库存或切换色板范围');
@@ -203,6 +244,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
           sampling,
           smooth,
           removeEdgeBackground: removeBg,
+          segmentationMask: bgMode === 'person' ? segMask : undefined,
           paletteScope,
           inventoryCodes: paletteScope === 'inventory' ? inventoryCodes : undefined,
         });
@@ -229,7 +271,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     return () => {
       cancelled = true;
     };
-  }, [pixels, gridWidth, maxColors, dither, sampling, smooth, removeBg, paletteScope, inventoryCodes]);
+  }, [pixels, gridWidth, maxColors, dither, sampling, smooth, removeBg, bgMode, segMask, paletteScope, inventoryCodes]);
 
   const items = useMemo(() => {
     if (!grid) return [] as Array<{ code: string; quantity: number }>;
@@ -325,6 +367,19 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     }
   };
 
+  const handleExportPng = () => {
+    if (!grid) {
+      setLocalMsg('还没有生成图纸，无法导出');
+      return;
+    }
+    try {
+      exportGridPng(grid, `拼豆图纸-${grid.width}x${grid.height}.png`);
+      setLocalMsg('已导出 PNG 图片');
+    } catch (error) {
+      setLocalMsg(`导出失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
   const handleSave = () => {
     if (!grid) {
       setLocalMsg('还没有生成图纸，无法保存');
@@ -399,6 +454,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                     <Chip label="色号标注" active={showCodes} onPress={() => setShowCodes((v) => !v)} />
                     <Chip label="库存覆盖" active={showOverlay} onPress={() => setShowOverlay((v) => !v)} />
                     <Chip label="点色删除" active={eraseMode} danger onPress={() => setEraseMode((v) => !v)} />
+                    <Chip label="导出图片" onPress={handleExportPng} />
                   </View>
                 </View>
                 {eraseMode ? (
@@ -409,6 +465,8 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                 {!pixels && !loadError ? <Text style={ui.muted}>正在读取图片…</Text> : null}
                 {grid ? canvasNode : !genError && !loadError && pixels ? <Text style={ui.muted}>正在生成图纸…</Text> : null}
                 {showOverlay ? <Text style={ui.legend}>红斜纹 = 缺货色 · 黄角标 = 余量低于安全库存</Text> : null}
+                {segBusy ? <Text style={ui.muted}>正在加载模型并分割人像…（首次使用需下载模型文件）</Text> : null}
+                {segError ? <Text style={ui.errorText}>{segError}</Text> : null}
                 {meta?.removedCells ? <Text style={ui.muted}>自动去背景已清空 {meta.removedCells} 格</Text> : null}
               </View>
 
@@ -490,6 +548,15 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                   <Chip label="仅 221 套装" active={paletteScope === 'mard221'} onPress={() => setPaletteScope('mard221')} />
                   <Chip label="仅库存色号" active={paletteScope === 'inventory'} onPress={() => setPaletteScope('inventory')} />
                 </View>
+
+                <Text style={ui.label}>抠图方式</Text>
+                <View style={ui.chipRow}>
+                  <Chip label="边缘检测" active={bgMode === 'edge'} onPress={() => setBgMode('edge')} />
+                  <Chip label="人像分割（AI）" active={bgMode === 'person'} onPress={() => setBgMode('person')} />
+                </View>
+                {bgMode === 'person' ? (
+                  <Text style={ui.muted}>AI 人像分割启用时，去背景由分割结果接管，「自动去背景」不生效</Text>
+                ) : null}
 
                 <Text style={ui.label}>采样方式</Text>
                 <View style={ui.chipRow}>
