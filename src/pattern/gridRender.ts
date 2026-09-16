@@ -133,7 +133,7 @@ export function renderGridToCanvas(grid: BeadGrid, opts: GridRenderOptions = {})
       }
       const hex = MARD_291_COLORS[value]?.hex ?? '#FF00FF';
       context.fillStyle = hex;
-      if (inset > 0) {
+      if (inset > 0 && typeof context.roundRect === 'function') {
         context.beginPath();
         context.roundRect(x + inset, y + inset, beadSize, beadSize, radius);
         context.fill();
