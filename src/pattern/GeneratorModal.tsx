@@ -1,7 +1,9 @@
 import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import {
+  ActivityIndicator,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -25,7 +27,7 @@ import {
 } from './engine';
 import type { BeadGrid, ImagePixels, PaletteScope } from './engine';
 import { buildStockOverlay, exportGridPng, renderGridToCanvas } from './gridRender';
-import { segmentPerson } from './segment';
+import { isPersonModelCached, prefetchPersonModel, segmentPerson } from './segment';
 import type { ForegroundMask } from './segment';
 
 export type GeneratorSaveResult = {
@@ -114,6 +116,47 @@ function Chip({
   );
 }
 
+function SliderRow({
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (v: number) => void;
+}) {
+  const [trackW, setTrackW] = useState(0);
+  const [draft, setDraft] = useState<number | undefined>();
+  const shown = draft ?? value;
+  const valueAt = (x: number) =>
+    clampNumber(Math.round(min + (Math.max(0, Math.min(x, trackW)) / Math.max(trackW, 1)) * (max - min)), min, max);
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => setDraft(valueAt(e.nativeEvent.locationX)),
+      onPanResponderMove: (e) => setDraft(valueAt(e.nativeEvent.locationX)),
+      onPanResponderRelease: (e) => {
+        const next = valueAt(e.nativeEvent.locationX);
+        setDraft(undefined);
+        if (next !== value) onCommit(next);
+      },
+      onPanResponderTerminate: () => setDraft(undefined),
+    }),
+  ).current;
+  const ratio = Math.max(0, Math.min(1, (shown - min) / (max - min)));
+  return (
+    <View style={ui.sliderHit} onLayout={(e) => setTrackW(e.nativeEvent.layout.width)} {...pan.panHandlers}>
+      <View style={ui.sliderTrack}>
+        <View style={[ui.sliderFill, { width: `${ratio * 100}%` }]} />
+      </View>
+      <View style={[ui.sliderThumb, { left: `${ratio * 100}%` }]} />
+    </View>
+  );
+}
+
 export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: GeneratorModalProps) {
   const { width: viewportWidth } = useWindowDimensions();
   const [pixels, setPixels] = useState<ImagePixels | undefined>();
@@ -131,8 +174,11 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [showOverlay, setShowOverlay] = useState(false);
   const [bgMode, setBgMode] = useState<'edge' | 'person'>('edge');
   const [segMask, setSegMask] = useState<ForegroundMask | undefined>();
-  const [segBusy, setSegBusy] = useState(false);
+  const [segPhase, setSegPhase] = useState<'idle' | 'download' | 'run'>('idle');
+  const [segRatio, setSegRatio] = useState(0);
   const [segError, setSegError] = useState('');
+  const [modelReady, setModelReady] = useState(isPersonModelCached());
+  const [genBusy, setGenBusy] = useState(false);
   const sourceCanvasRef = useRef<HTMLCanvasElement | undefined>(undefined);
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
@@ -160,7 +206,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     setGrid(undefined);
     setSegMask(undefined);
     setSegError('');
-    setSegBusy(false);
+    setSegPhase('idle');
     sourceCanvasRef.current = undefined;
     const image = document.createElement('img');
     image.onload = () => {
@@ -195,30 +241,40 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     };
   }, [visible, imageUri]);
 
-  // Person segmentation: lazy-loads the MediaPipe WASM model on first use and
-  // caches the mask per loaded image. Failure falls back to edge detection.
+  // Person segmentation: prefetch the MediaPipe WASM/model files with real
+  // byte-level progress (warming the HTTP cache for the library's own fetch),
+  // then run inference. The mask is cached per loaded image; failure falls
+  // back to edge detection.
   useEffect(() => {
-    if (bgMode !== 'person' || segMask || segBusy || segError) return;
+    if (bgMode !== 'person' || segMask || segPhase !== 'idle' || segError) return;
     const source = sourceCanvasRef.current;
     if (!source || !pixels) return;
     let cancelled = false;
-    setSegBusy(true);
-    segmentPerson(source, pixels.width, pixels.height)
-      .then((mask) => {
+    (async () => {
+      try {
+        setSegPhase('download');
+        setSegRatio(0);
+        await prefetchPersonModel((r) => {
+          if (!cancelled) setSegRatio(r);
+        });
+        if (cancelled) return;
+        setSegPhase('run');
+        const mask = await segmentPerson(source, pixels.width, pixels.height);
         if (cancelled) return;
         setSegMask(mask);
-        setSegBusy(false);
-      })
-      .catch((error) => {
+        setSegPhase('idle');
+        setModelReady(true);
+      } catch (error) {
         if (cancelled) return;
-        setSegBusy(false);
+        setSegPhase('idle');
         setSegError(`人像分割失败，已回退边缘检测：${error instanceof Error ? error.message : '未知错误'}`);
         setBgMode('edge');
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [bgMode, segMask, segBusy, segError, pixels]);
+  }, [bgMode, segMask, segPhase, segError, pixels]);
 
   // Regenerate whenever the source pixels or any parameter change. Wide grids get a small
   // debounce so numeric inputs stay responsive.
@@ -226,6 +282,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     if (!pixels) return;
     if (bgMode === 'person' && !segMask) {
       setGrid(undefined);
+      setGenBusy(false);
       return;
     }
     if (paletteScope === 'inventory' && inventoryCodes.size === 0) {
@@ -237,6 +294,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     const run = () => {
       if (cancelled) return;
       try {
+        setGenBusy(true);
         const result = generateBeadGrid(pixels, {
           gridWidth,
           maxColors,
@@ -256,20 +314,20 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
           removedCells: result.removedCells,
         });
         setGenError('');
+        if (!cancelled) setGenBusy(false);
       } catch (error) {
-        if (!cancelled) setGenError(`生成失败：${error instanceof Error ? error.message : '未知错误'}`);
+        if (!cancelled) {
+          setGenError(`生成失败：${error instanceof Error ? error.message : '未知错误'}`);
+          setGenBusy(false);
+        }
       }
     };
-    if (gridWidth > 80) {
-      const timer = setTimeout(run, 150);
-      return () => {
-        cancelled = true;
-        clearTimeout(timer);
-      };
-    }
-    run();
+    // Defer compute a tick so the busy indicator paints first; wide grids also
+    // get a debounce so slider drags and numeric edits stay responsive.
+    const timer = setTimeout(run, gridWidth > 80 ? 150 : 30);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [pixels, gridWidth, maxColors, dither, sampling, smooth, removeBg, bgMode, segMask, paletteScope, inventoryCodes]);
 
@@ -465,7 +523,24 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                 {!pixels && !loadError ? <Text style={ui.muted}>正在读取图片…</Text> : null}
                 {grid ? canvasNode : !genError && !loadError && pixels ? <Text style={ui.muted}>正在生成图纸…</Text> : null}
                 {showOverlay ? <Text style={ui.legend}>红斜纹 = 缺货色 · 黄角标 = 余量低于安全库存</Text> : null}
-                {segBusy ? <Text style={ui.muted}>正在加载模型并分割人像…（首次使用需下载模型文件）</Text> : null}
+                {segPhase === 'download' ? (
+                  <View style={ui.progressRow}>
+                    <ActivityIndicator size="small" color={colors.blue} />
+                    <Text style={ui.muted}> 正在下载 AI 分割模型…{segRatio > 0 ? ` ${Math.round(segRatio * 100)}%` : ''}</Text>
+                  </View>
+                ) : null}
+                {segPhase === 'download' && segRatio > 0 ? (
+                  <View style={ui.progressTrack}>
+                    <View style={[ui.progressFill, { width: `${segRatio * 100}%` }]} />
+                  </View>
+                ) : null}
+                {segPhase === 'run' ? (
+                  <View style={ui.progressRow}>
+                    <ActivityIndicator size="small" color={colors.blue} />
+                    <Text style={ui.muted}> 正在分割人像…（首次包含模型编译，稍慢）</Text>
+                  </View>
+                ) : null}
+                {genBusy && grid ? <Text style={ui.muted}>正在重新生成…</Text> : null}
                 {segError ? <Text style={ui.errorText}>{segError}</Text> : null}
                 {meta?.removedCells ? <Text style={ui.muted}>自动去背景已清空 {meta.removedCells} 格</Text> : null}
               </View>
@@ -509,10 +584,10 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                   <Chip label="仅库存色号" active={paletteScope === 'inventory'} onPress={() => setPaletteScope('inventory')} />
                 </View>
 
-                <Text style={ui.label}>图纸宽度（格）</Text>
+                <Text style={ui.label}>图纸宽度（格）· {gridWidth}</Text>
                 <View style={ui.chipRow}>
                   {GRID_WIDTH_PRESETS.map((width) => (
-                    <Chip key={width} label={`${width} 格`} active={gridWidth === width} onPress={() => applyGridWidth(width)} />
+                    <Chip key={width} label={`${width}`} active={gridWidth === width} onPress={() => applyGridWidth(width)} />
                   ))}
                   <TextInput
                     style={[ui.input, ui.numInput]}
@@ -522,13 +597,11 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                     accessibilityLabel="自定义图纸宽度"
                   />
                 </View>
-                <Text style={ui.muted}>范围 {GRID_WIDTH_MIN}-{GRID_WIDTH_MAX} 格，高度按图片比例自动计算</Text>
+                <SliderRow value={gridWidth} min={GRID_WIDTH_MIN} max={GRID_WIDTH_MAX} onCommit={applyGridWidth} />
+                <Text style={ui.muted}>拖动滑块松手后重算 · 范围 {GRID_WIDTH_MIN}-{GRID_WIDTH_MAX} 格</Text>
 
-                <Text style={ui.label}>最大色数</Text>
+                <Text style={ui.label}>最大色数 · {maxColors}</Text>
                 <View style={ui.chipRow}>
-                  <Pressable accessibilityLabel="减少最大色数" style={ui.stepButton} onPress={() => applyMaxColors(maxColors - 1)}>
-                    <Text style={ui.stepButtonText}>−</Text>
-                  </Pressable>
                   <TextInput
                     style={[ui.input, ui.numInput]}
                     value={maxColorsInput}
@@ -536,9 +609,9 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                     keyboardType="number-pad"
                     accessibilityLabel="最大色数"
                   />
-                  <Pressable accessibilityLabel="增加最大色数" style={ui.stepButton} onPress={() => applyMaxColors(maxColors + 1)}>
-                    <Text style={ui.stepButtonText}>+</Text>
-                  </Pressable>
+                  <View style={ui.sliderFlex}>
+                    <SliderRow value={maxColors} min={MAX_COLORS_MIN} max={MAX_COLORS_MAX} onCommit={applyMaxColors} />
+                  </View>
                 </View>
                 <Text style={ui.muted}>范围 {MAX_COLORS_MIN}-{MAX_COLORS_MAX} 色，超出后低频色会并入最接近的颜色</Text>
 
@@ -555,7 +628,10 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                   <Chip label="人像分割（AI）" active={bgMode === 'person'} onPress={() => setBgMode('person')} />
                 </View>
                 {bgMode === 'person' ? (
-                  <Text style={ui.muted}>AI 人像分割启用时，去背景由分割结果接管，「自动去背景」不生效</Text>
+                  <Text style={ui.muted}>
+                    {modelReady ? '分割模型已缓存，再次使用免下载' : '首次使用需下载约 6MB 模型文件'}
+                    ，启用时去背景由分割结果接管
+                  </Text>
                 ) : null}
 
                 <Text style={ui.label}>采样方式</Text>
@@ -725,6 +801,55 @@ const ui = StyleSheet.create({
   numInput: {
     width: 88,
     textAlign: 'center',
+  },
+  sliderHit: {
+    paddingVertical: 10,
+    justifyContent: 'center',
+    cursor: 'pointer',
+  } as object,
+  sliderTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.line,
+    overflow: 'hidden',
+  },
+  sliderFill: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.blue,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.white,
+    borderWidth: 2,
+    borderColor: colors.blue,
+    marginLeft: -9,
+    top: 5,
+  },
+  sliderFlex: {
+    flex: 1,
+    minWidth: 160,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.line,
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  progressFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.blue,
   },
   stepButton: {
     width: 38,
