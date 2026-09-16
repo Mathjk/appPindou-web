@@ -81,7 +81,7 @@ export function GridViewModal({ visible, project, data, onClose, onGridChanged }
   const [grid, setGrid] = useState<BeadGrid | undefined>();
   const [decodeError, setDecodeError] = useState('');
   const [eraseMode, setEraseMode] = useState(false);
-  const [showOverlay, setShowOverlay] = useState(true);
+  const [showOverlay, setShowOverlay] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
   const [localMsg, setLocalMsg] = useState('');

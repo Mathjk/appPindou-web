@@ -21,7 +21,7 @@ const EMPTY_FILL = '#E9ECF1';
 const EMPTY_CROSS = '#C4CCD8';
 const GRID_LINE = 'rgba(23, 26, 33, 0.14)';
 const BEAD_RIM = 'rgba(23, 26, 33, 0.16)';
-const MISSING_STROKE = 'rgba(192, 47, 47, 0.9)';
+const MISSING_STROKE = 'rgba(192, 47, 47, 0.45)';
 const LOW_STOCK_FILL = '#F5C518';
 const LOW_STOCK_EDGE = 'rgba(120, 84, 0, 0.65)';
 
@@ -52,10 +52,10 @@ function drawMissingHatch(context: CanvasRenderingContext2D, x: number, y: numbe
   context.rect(x, y, size, size);
   context.clip();
   context.strokeStyle = MISSING_STROKE;
-  context.lineWidth = Math.max(1, size * 0.07);
+  context.lineWidth = Math.max(1, size * 0.05);
   context.lineCap = 'square';
   // 45° hatch: lines running bottom-left to top-right, spaced half a cell apart.
-  for (let offset = -size; offset <= size; offset += size / 2) {
+  for (let offset = -size; offset <= size; offset += size / 1.5) {
     context.beginPath();
     context.moveTo(x + offset, y + size);
     context.lineTo(x + offset + size, y);

@@ -126,7 +126,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [sampling, setSampling] = useState<'dominant' | 'average'>('dominant');
   const [smooth, setSmooth] = useState(true);
   const [eraseMode, setEraseMode] = useState(false);
-  const [showOverlay, setShowOverlay] = useState(true);
+  const [showOverlay, setShowOverlay] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
   const [grid, setGrid] = useState<BeadGrid | undefined>();
