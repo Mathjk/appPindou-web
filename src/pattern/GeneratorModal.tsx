@@ -121,29 +121,53 @@ function SliderRow({
   min,
   max,
   onCommit,
+  onDraft,
 }: {
   value: number;
   min: number;
   max: number;
   onCommit: (v: number) => void;
+  onDraft?: (v: number | undefined) => void;
 }) {
   const [trackW, setTrackW] = useState(0);
   const [draft, setDraft] = useState<number | undefined>();
+  // PanResponder callbacks are created once; read the freshest props through a
+  // ref so drags never act on stale track width / value closures.
+  const live = useRef({ trackW, value, min, max, onCommit, onDraft });
+  live.current = { trackW, value, min, max, onCommit, onDraft };
   const shown = draft ?? value;
-  const valueAt = (x: number) =>
-    clampNumber(Math.round(min + (Math.max(0, Math.min(x, trackW)) / Math.max(trackW, 1)) * (max - min)), min, max);
+  const valueAt = (x: number) => {
+    const c = live.current;
+    return clampNumber(
+      Math.round(c.min + (Math.max(0, Math.min(x, c.trackW)) / Math.max(c.trackW, 1)) * (c.max - c.min)),
+      c.min,
+      c.max,
+    );
+  };
   const pan = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e) => setDraft(valueAt(e.nativeEvent.locationX)),
-      onPanResponderMove: (e) => setDraft(valueAt(e.nativeEvent.locationX)),
+      onPanResponderGrant: (e) => {
+        const v = valueAt(e.nativeEvent.locationX);
+        setDraft(v);
+        live.current.onDraft?.(v);
+      },
+      onPanResponderMove: (e) => {
+        const v = valueAt(e.nativeEvent.locationX);
+        setDraft(v);
+        live.current.onDraft?.(v);
+      },
       onPanResponderRelease: (e) => {
         const next = valueAt(e.nativeEvent.locationX);
         setDraft(undefined);
-        if (next !== value) onCommit(next);
+        live.current.onDraft?.(undefined);
+        if (next !== live.current.value) live.current.onCommit(next);
       },
-      onPanResponderTerminate: () => setDraft(undefined),
+      onPanResponderTerminate: () => {
+        setDraft(undefined);
+        live.current.onDraft?.(undefined);
+      },
     }),
   ).current;
   const ratio = Math.max(0, Math.min(1, (shown - min) / (max - min)));
@@ -179,6 +203,8 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [segError, setSegError] = useState('');
   const [modelReady, setModelReady] = useState(isPersonModelCached());
   const [genBusy, setGenBusy] = useState(false);
+  const [widthDraft, setWidthDraft] = useState<number | undefined>();
+  const [colorsDraft, setColorsDraft] = useState<number | undefined>();
   const sourceCanvasRef = useRef<HTMLCanvasElement | undefined>(undefined);
   const [showCodes, setShowCodes] = useState(false);
   const [zoomed, setZoomed] = useState(false);
@@ -584,7 +610,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                   <Chip label="仅库存色号" active={paletteScope === 'inventory'} onPress={() => setPaletteScope('inventory')} />
                 </View>
 
-                <Text style={ui.label}>图纸宽度（格）· {gridWidth}</Text>
+                <Text style={ui.label}>图纸宽度（格）· {widthDraft ?? gridWidth}</Text>
                 <View style={ui.chipRow}>
                   {GRID_WIDTH_PRESETS.map((width) => (
                     <Chip key={width} label={`${width}`} active={gridWidth === width} onPress={() => applyGridWidth(width)} />
@@ -597,10 +623,10 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                     accessibilityLabel="自定义图纸宽度"
                   />
                 </View>
-                <SliderRow value={gridWidth} min={GRID_WIDTH_MIN} max={GRID_WIDTH_MAX} onCommit={applyGridWidth} />
+                <SliderRow value={gridWidth} min={GRID_WIDTH_MIN} max={GRID_WIDTH_MAX} onCommit={applyGridWidth} onDraft={setWidthDraft} />
                 <Text style={ui.muted}>拖动滑块松手后重算 · 范围 {GRID_WIDTH_MIN}-{GRID_WIDTH_MAX} 格</Text>
 
-                <Text style={ui.label}>最大色数 · {maxColors}</Text>
+                <Text style={ui.label}>最大色数 · {colorsDraft ?? maxColors}</Text>
                 <View style={ui.chipRow}>
                   <TextInput
                     style={[ui.input, ui.numInput]}
@@ -610,7 +636,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                     accessibilityLabel="最大色数"
                   />
                   <View style={ui.sliderFlex}>
-                    <SliderRow value={maxColors} min={MAX_COLORS_MIN} max={MAX_COLORS_MAX} onCommit={applyMaxColors} />
+                    <SliderRow value={maxColors} min={MAX_COLORS_MIN} max={MAX_COLORS_MAX} onCommit={applyMaxColors} onDraft={setColorsDraft} />
                   </View>
                 </View>
                 <Text style={ui.muted}>范围 {MAX_COLORS_MIN}-{MAX_COLORS_MAX} 色，超出后低频色会并入最接近的颜色</Text>

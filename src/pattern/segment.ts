@@ -16,13 +16,16 @@ export type ForegroundMask = {
 
 type MpModule = typeof import('@mediapipe/selfie_segmentation');
 
-const PERSON_MODEL_FILES = [
-  'selfie_segmentation_solution_simd_wasm_bin.js',
-  'selfie_segmentation_solution_simd_wasm_bin.wasm',
-  'selfie_segmentation_solution_simd_wasm_bin.data',
-  'selfie_segmentation.binarypb',
-  'selfie_segmentation.tflite',
+// Exact byte sizes of the bundled @mediapipe/selfie_segmentation@0.1 assets.
+// Hardcoded because GitHub Pages serves compressible files without
+// Content-Length, which would leave the progress bar stuck at 0%.
+const PERSON_MODEL_FILES: Array<{ file: string; bytes: number }> = [
+  { file: 'selfie_segmentation_solution_simd_wasm_bin.js', bytes: 276493 },
+  { file: 'selfie_segmentation_solution_simd_wasm_bin.wasm', bytes: 5694839 },
+  { file: 'selfie_segmentation.binarypb', bytes: 362 },
+  { file: 'selfie_segmentation.tflite', bytes: 249024 },
 ];
+const PERSON_MODEL_TOTAL = PERSON_MODEL_FILES.reduce((sum, f) => sum + f.bytes, 0);
 const PERSON_MODEL_CACHE_KEY = 'pindou.mediapipe.person.v1';
 
 let segmenter: SelfieSegmentation | undefined;
@@ -74,17 +77,15 @@ export function isPersonModelCached(): boolean {
  * invisible wait inside send().
  */
 export async function prefetchPersonModel(onProgress?: (ratio: number) => void): Promise<void> {
-  const files = PERSON_MODEL_FILES.map((file) => ({ url: assetUrl(file), loaded: 0, total: 0 }));
+  const files = PERSON_MODEL_FILES.map((f) => ({ url: assetUrl(f.file), bytes: f.bytes, loaded: 0 }));
   const report = () => {
-    const total = files.reduce((sum, f) => sum + f.total, 0);
-    const loaded = files.reduce((sum, f) => sum + f.loaded, 0);
-    onProgress?.(total > 0 ? Math.min(loaded / total, 1) : 0);
+    const loaded = files.reduce((sum, f) => sum + Math.min(f.loaded, f.bytes * 0.98), 0);
+    onProgress?.(Math.min(loaded / PERSON_MODEL_TOTAL, 0.99));
   };
   await Promise.all(
     files.map(async (f) => {
       const res = await fetch(f.url);
       if (!res.ok || !res.body) throw new Error(`模型文件下载失败（HTTP ${res.status}）`);
-      f.total = Number(res.headers.get('content-length') ?? 0);
       const reader = res.body.getReader();
       for (;;) {
         const { done, value } = await reader.read();
@@ -92,10 +93,9 @@ export async function prefetchPersonModel(onProgress?: (ratio: number) => void):
         f.loaded += value?.byteLength ?? 0;
         report();
       }
-      f.loaded = Math.max(f.loaded, f.total);
-      report();
     }),
   );
+  onProgress?.(1);
 }
 
 /**
