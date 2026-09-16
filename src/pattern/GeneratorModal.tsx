@@ -28,6 +28,7 @@ import {
 import type { BeadGrid, ImagePixels, PaletteScope } from './engine';
 import { buildStockOverlay, exportGridPng, renderGridToCanvas } from './gridRender';
 import { isPersonModelCached, prefetchPersonModel, segmentPerson } from './segment';
+import type { ModelDownloadProgress } from './segment';
 import type { ForegroundMask } from './segment';
 
 export type GeneratorSaveResult = {
@@ -199,7 +200,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
   const [bgMode, setBgMode] = useState<'edge' | 'person'>('edge');
   const [segMask, setSegMask] = useState<ForegroundMask | undefined>();
   const [segPhase, setSegPhase] = useState<'idle' | 'download' | 'run'>('idle');
-  const [segRatio, setSegRatio] = useState(0);
+  const [segProgress, setSegProgress] = useState<ModelDownloadProgress | undefined>();
   const [segError, setSegError] = useState('');
   const [modelReady, setModelReady] = useState(isPersonModelCached());
   const [genBusy, setGenBusy] = useState(false);
@@ -233,6 +234,7 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     setSegMask(undefined);
     setSegError('');
     setSegPhase('idle');
+    setSegProgress(undefined);
     sourceCanvasRef.current = undefined;
     const image = document.createElement('img');
     image.onload = () => {
@@ -279,9 +281,8 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
     (async () => {
       try {
         setSegPhase('download');
-        setSegRatio(0);
-        await prefetchPersonModel((r) => {
-          if (!cancelled) setSegRatio(r);
+        await prefetchPersonModel((p) => {
+          if (!cancelled) setSegProgress(p);
         });
         if (cancelled) return;
         setSegPhase('run');
@@ -507,7 +508,9 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
         <View style={ui.header}>
           <View style={ui.flex}>
             <Text style={ui.title}>照片生成图纸</Text>
-            <Text style={ui.headerSub}>调整参数实时预览拼豆效果，确认后存为图纸项目</Text>
+            <Text style={ui.headerSub}>
+              调整参数实时预览拼豆效果，确认后存为图纸项目{process.env.EXPO_PUBLIC_BUILD_SHA ? ` · v${process.env.EXPO_PUBLIC_BUILD_SHA}` : ''}
+            </Text>
           </View>
           <Pressable accessibilityLabel="关闭照片生成" style={ui.headerClose} onPress={onCancel}>
             <Text style={ui.headerCloseText}>关闭</Text>
@@ -550,14 +553,19 @@ export function GeneratorModal({ visible, imageUri, data, onCancel, onSave }: Ge
                 {grid ? canvasNode : !genError && !loadError && pixels ? <Text style={ui.muted}>正在生成图纸…</Text> : null}
                 {showOverlay ? <Text style={ui.legend}>红斜纹 = 缺货色 · 黄角标 = 余量低于安全库存</Text> : null}
                 {segPhase === 'download' ? (
-                  <View style={ui.progressRow}>
-                    <ActivityIndicator size="small" color={colors.blue} />
-                    <Text style={ui.muted}> 正在下载 AI 分割模型…{segRatio > 0 ? ` ${Math.round(segRatio * 100)}%` : ''}</Text>
-                  </View>
-                ) : null}
-                {segPhase === 'download' && segRatio > 0 ? (
-                  <View style={ui.progressTrack}>
-                    <View style={[ui.progressFill, { width: `${segRatio * 100}%` }]} />
+                  <View>
+                    <View style={ui.progressRow}>
+                      <ActivityIndicator size="small" color={colors.blue} />
+                      <Text style={ui.muted}>
+                        {` 正在下载 AI 分割模型 ${segProgress ? `${Math.round(segProgress.ratio * 100)}%（${(segProgress.loadedBytes / 1048576).toFixed(1)}MB / ${(segProgress.totalBytes / 1048576).toFixed(1)}MB）` : '…'}`}
+                      </Text>
+                    </View>
+                    <View style={ui.progressTrack}>
+                      <View style={[ui.progressFill, { width: `${(segProgress?.ratio ?? 0) * 100}%` }]} />
+                    </View>
+                    <Text style={ui.muted}>
+                      {segProgress?.source === 'cdn' ? '下载源：CDN 镜像（本站较慢已自动切换）' : '下载源：本站 · 卡住超时会自动切换 CDN'}
+                    </Text>
                   </View>
                 ) : null}
                 {segPhase === 'run' ? (

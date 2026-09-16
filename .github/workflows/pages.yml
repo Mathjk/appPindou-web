@@ -39,6 +39,7 @@ jobs:
           else
             echo "PUBLIC_URL=/$repo_name/" >> "$GITHUB_ENV"
           fi
+          echo "EXPO_PUBLIC_BUILD_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Build static site
         run: npm run build:web

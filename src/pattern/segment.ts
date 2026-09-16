@@ -100,14 +100,29 @@ async function fetchWithWatchdog(url: string, onBytes: (loaded: number) => void)
  * blobs through locateFile, so a successful prefetch guarantees the whole load
  * works offline-of-the-network. Tries same-origin first, then the CDN mirror.
  */
-export async function prefetchPersonModel(onProgress?: (ratio: number) => void): Promise<void> {
+export type ModelDownloadProgress = {
+  /** 0-1 completion ratio across all files. */
+  ratio: number;
+  /** Bytes downloaded so far. */
+  loadedBytes: number;
+  /** Expected total bytes (~6.2MB). */
+  totalBytes: number;
+  /** Which mirror is currently serving files. */
+  source: 'same-origin' | 'cdn';
+};
+
+export async function prefetchPersonModel(onProgress?: (p: ModelDownloadProgress) => void): Promise<void> {
+  const sources: Array<{ base: string; source: ModelDownloadProgress['source'] }> = [
+    { base: defaultBase(), source: 'same-origin' },
+    { base: CDN_BASE_URL, source: 'cdn' },
+  ];
   let lastError: unknown;
-  for (const base of [defaultBase(), CDN_BASE_URL]) {
+  for (const { base, source } of sources) {
     try {
       const loaded = new Array<number>(PERSON_MODEL_FILES.length).fill(0);
       const report = () => {
         const sum = loaded.reduce((a, b) => a + b, 0);
-        onProgress?.(Math.min(sum / PERSON_MODEL_TOTAL, 0.99));
+        onProgress?.({ ratio: Math.min(sum / PERSON_MODEL_TOTAL, 0.99), loadedBytes: sum, totalBytes: PERSON_MODEL_TOTAL, source });
       };
       const buffers = await Promise.all(
         PERSON_MODEL_FILES.map(async (f, i) => ({
@@ -124,11 +139,11 @@ export async function prefetchPersonModel(onProgress?: (ratio: number) => void):
         blobUrls.set(file, URL.createObjectURL(new Blob([bytes])));
       }
       resolvedBase = base;
-      onProgress?.(1);
+      onProgress?.({ ratio: 1, loadedBytes: PERSON_MODEL_TOTAL, totalBytes: PERSON_MODEL_TOTAL, source });
       return;
     } catch (error) {
       lastError = error;
-      onProgress?.(0);
+      onProgress?.({ ratio: 0, loadedBytes: 0, totalBytes: PERSON_MODEL_TOTAL, source });
     }
   }
   throw lastError instanceof Error ? lastError : new Error('模型下载失败');
