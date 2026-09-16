@@ -1,9 +1,11 @@
 /**
- * Browser-side subject segmentation (WASM). The MediaPipe model assets live in
- * public/mediapipe and are fetched on first use only, so the feature costs
- * nothing until selected. A general-subject provider (e.g. ISNet via ONNX
- * Runtime) can plug into the same ForegroundMask contract later - the engine
- * only cares about the mask.
+ * Browser-side subject segmentation (WASM). The model assets are fetched once
+ * with visible progress, turned into in-memory Blob URLs, and handed to
+ * MediaPipe via locateFile - so every internal request (worker importScripts,
+ * graph/model fetches) resolves from memory and never touches the network
+ * again. If the same-origin copy stalls, the loader retries from the jsdelivr
+ * CDN. A general-subject provider (e.g. ISNet via ONNX Runtime) can plug into
+ * the same ForegroundMask contract later - the engine only cares about masks.
  */
 import type { InputImage, Results, SelfieSegmentation } from '@mediapipe/selfie_segmentation';
 
@@ -16,9 +18,9 @@ export type ForegroundMask = {
 
 type MpModule = typeof import('@mediapipe/selfie_segmentation');
 
-// Exact byte sizes of the bundled @mediapipe/selfie_segmentation@0.1 assets.
-// Hardcoded because GitHub Pages serves compressible files without
-// Content-Length, which would leave the progress bar stuck at 0%.
+// Exact byte sizes of the bundled @mediapipe/selfie_segmentation@0.1 assets -
+// hardcoded because some hosts drop Content-Length on compressed responses,
+// which would leave the progress bar stuck at 0%.
 const PERSON_MODEL_FILES: Array<{ file: string; bytes: number }> = [
   { file: 'selfie_segmentation_solution_simd_wasm_bin.js', bytes: 276493 },
   { file: 'selfie_segmentation_solution_simd_wasm_bin.wasm', bytes: 5694839 },
@@ -27,13 +29,109 @@ const PERSON_MODEL_FILES: Array<{ file: string; bytes: number }> = [
 ];
 const PERSON_MODEL_TOTAL = PERSON_MODEL_FILES.reduce((sum, f) => sum + f.bytes, 0);
 const PERSON_MODEL_CACHE_KEY = 'pindou.mediapipe.person.v1';
+const CDN_BASE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/';
+const STALL_MS = 12_000;
 
 let segmenter: SelfieSegmentation | undefined;
 let segmenterReady: Promise<SelfieSegmentation> | undefined;
 let pendingResolve: ((r: Results) => void) | undefined;
 
-function assetUrl(file: string): string {
-  return new URL(`mediapipe/${file}`, document.baseURI).href;
+/** file name -> in-memory blob URL; populated by prefetchPersonModel. */
+const blobUrls = new Map<string, string>();
+/** Base URL that successfully served the files (same-origin or CDN fallback). */
+let resolvedBase = '';
+
+function defaultBase(): string {
+  return new URL('mediapipe/', document.baseURI).href;
+}
+
+function locateFile(file: string): string {
+  return blobUrls.get(file) ?? `${resolvedBase || defaultBase()}${file}`;
+}
+
+/** Whether the person model finished downloading in a previous session (hint only - the
+ * browser HTTP cache is the real store and may still be evicted). */
+export function isPersonModelCached(): boolean {
+  try {
+    return window.localStorage.getItem(PERSON_MODEL_CACHE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** fetch -> Uint8Array with a stall watchdog: no new bytes for STALL_MS aborts
+ *  the request so the loader can fail over to the next mirror instead of
+ *  spinning forever on a throttled connection. */
+async function fetchWithWatchdog(url: string, onBytes: (loaded: number) => void): Promise<Uint8Array<ArrayBuffer>> {
+  const controller = new AbortController();
+  let loaded = 0;
+  let lastLoaded = -1;
+  const watchdog = setInterval(() => {
+    if (loaded === lastLoaded) controller.abort();
+    else lastLoaded = loaded;
+  }, STALL_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.byteLength;
+      onBytes(loaded);
+    }
+    const out = new Uint8Array(loaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
+  } finally {
+    clearInterval(watchdog);
+  }
+}
+
+/**
+ * Download the person-segmentation model files with real byte-level progress
+ * (0-1) and register them as Blob URLs. MediaPipe internals later consume the
+ * blobs through locateFile, so a successful prefetch guarantees the whole load
+ * works offline-of-the-network. Tries same-origin first, then the CDN mirror.
+ */
+export async function prefetchPersonModel(onProgress?: (ratio: number) => void): Promise<void> {
+  let lastError: unknown;
+  for (const base of [defaultBase(), CDN_BASE_URL]) {
+    try {
+      const loaded = new Array<number>(PERSON_MODEL_FILES.length).fill(0);
+      const report = () => {
+        const sum = loaded.reduce((a, b) => a + b, 0);
+        onProgress?.(Math.min(sum / PERSON_MODEL_TOTAL, 0.99));
+      };
+      const buffers = await Promise.all(
+        PERSON_MODEL_FILES.map(async (f, i) => ({
+          file: f.file,
+          bytes: await fetchWithWatchdog(base + f.file, (n) => {
+            loaded[i] = n;
+            report();
+          }),
+        })),
+      );
+      for (const { file, bytes } of buffers) {
+        const old = blobUrls.get(file);
+        if (old) URL.revokeObjectURL(old);
+        blobUrls.set(file, URL.createObjectURL(new Blob([bytes])));
+      }
+      resolvedBase = base;
+      onProgress?.(1);
+      return;
+    } catch (error) {
+      lastError = error;
+      onProgress?.(0);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('模型下载失败');
 }
 
 function getSegmenter(): Promise<SelfieSegmentation> {
@@ -41,7 +139,7 @@ function getSegmenter(): Promise<SelfieSegmentation> {
   if (!segmenterReady) {
     segmenterReady = (async () => {
       const mod: MpModule = await import('@mediapipe/selfie_segmentation');
-      const instance = new mod.SelfieSegmentation({ locateFile: assetUrl });
+      const instance = new mod.SelfieSegmentation({ locateFile });
       // modelSelection 0 = general model (accurate full-body portraits);
       // 1 = landscape model (faster, tuned for half-body selfies).
       instance.setOptions({ modelSelection: 0 });
@@ -58,44 +156,6 @@ function getSegmenter(): Promise<SelfieSegmentation> {
     });
   }
   return segmenterReady;
-}
-
-/** Whether the person model finished downloading in a previous session (hint only - the
- * browser HTTP cache is the real store and may still be evicted). */
-export function isPersonModelCached(): boolean {
-  try {
-    return window.localStorage.getItem(PERSON_MODEL_CACHE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Warm the browser HTTP cache with the person-segmentation model files and
- * report byte-level progress (0-1). MediaPipe refetches the same URLs later and
- * hits the warm cache, so the real download cost shows up here instead of an
- * invisible wait inside send().
- */
-export async function prefetchPersonModel(onProgress?: (ratio: number) => void): Promise<void> {
-  const files = PERSON_MODEL_FILES.map((f) => ({ url: assetUrl(f.file), bytes: f.bytes, loaded: 0 }));
-  const report = () => {
-    const loaded = files.reduce((sum, f) => sum + Math.min(f.loaded, f.bytes * 0.98), 0);
-    onProgress?.(Math.min(loaded / PERSON_MODEL_TOTAL, 0.99));
-  };
-  await Promise.all(
-    files.map(async (f) => {
-      const res = await fetch(f.url);
-      if (!res.ok || !res.body) throw new Error(`模型文件下载失败（HTTP ${res.status}）`);
-      const reader = res.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        f.loaded += value?.byteLength ?? 0;
-        report();
-      }
-    }),
-  );
-  onProgress?.(1);
 }
 
 /**
